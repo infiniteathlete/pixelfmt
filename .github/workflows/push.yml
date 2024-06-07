@@ -1,0 +1,33 @@
+name: Push
+
+on:
+  push:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, macos-latest]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+        components: clippy
+    - name: Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.runner }}
+    - run: cargo install cargo-criterion
+    - run: uname -a
+    - run: cargo fmt -- --check
+    - run: cargo clippy -- --deny warnings
+    - run: cargo test --release
+    - run: cargo criterion

@@ -1,0 +1,24 @@
+[package]
+name = "pixelfmt"
+version = "0.1.0"
+description = "Pixel format conversions in pure Rust with SIMD optimizations"
+authors = ["Infinite Athlete <av-eng@infiniteathlete.ai>"]
+license = "MIT OR Apache-2.0"
+edition = "2021"
+keywords = ["yuv"]
+categories = ["multimedia::images", "multimedia::video"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+[dev-dependencies]
+criterion = "0.5.1"
+yuv-sys = "0.3.6"
+
+[profile.release]
+debug = 1
+
+[[bench]]
+name = "bench"
+harness = false
