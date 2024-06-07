@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Infinite Athlete <av-eng@infiniteathlete.ai>
+// Copyright (C) 2024 Infinite Athlete, Inc. <av-eng@infiniteathlete.ai>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::hint::black_box;
