@@ -152,7 +152,7 @@ impl BlockProcessor for ExplicitAvx2DoubleBlock {
         if is_x86_feature_detected!("avx2") {
             Ok(Self(()))
         } else {
-            Err(ConversionError)
+            Err(ConversionError("avx2 is not supported on this machine"))
         }
     }
 
@@ -225,7 +225,7 @@ impl BlockProcessor for ExplicitAvx2SingleBlock {
         if is_x86_feature_detected!("avx2") {
             Ok(Self(()))
         } else {
-            Err(ConversionError)
+            Err(ConversionError("avx2 is not supported on this machine"))
         }
     }
 
