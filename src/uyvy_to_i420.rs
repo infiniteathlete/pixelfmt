@@ -12,10 +12,12 @@ use std::arch::aarch64;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64;
-use std::mem::MaybeUninit;
+// use std::mem::MaybeUninit;
 
-#[derive(Debug)]
-pub struct Unsupported;
+use crate::{
+    frame::{Frame, FrameBuf},
+    ConversionError,
+};
 
 /// Processes a block `PIXELS` columns wide, 2 rows high.
 #[doc(hidden)]
@@ -24,7 +26,7 @@ pub trait BlockProcessor: Copy + Clone + Sized + Send + Sync {
     const PIXELS: usize;
 
     /// Returns true if this block type is supported on this machine.
-    fn new() -> Result<Self, Unsupported>;
+    fn new() -> Result<Self, ConversionError>;
 
     /// Processes a block `PIXELS` wide, two rows high.
     ///
@@ -51,65 +53,75 @@ pub trait BlockProcessor: Copy + Clone + Sized + Send + Sync {
 /// Guaranteed to initialize and fill the supplied output planes on success.
 /// `y_out` is of the shape `(height, width)`; `u_out` and `v_out` are each of
 /// the shape `(height / 2, width / 2)`.
-pub fn convert(
-    uyvy_in: &[u8],
-    width: usize,
-    height: usize,
-    y_out: &mut [MaybeUninit<u8>],
-    u_out: &mut [MaybeUninit<u8>],
-    v_out: &mut [MaybeUninit<u8>],
-) -> Result<(), Unsupported> {
+pub fn convert<FI: Frame, BO: FrameBuf>(
+    uyvy_in: &FI,
+    yuv_out: BO,
+) -> Result<BO::Frame, ConversionError> {
     #[cfg(target_arch = "x86_64")]
-    return convert_with::<ExplicitAvx2DoubleBlock>(uyvy_in, width, height, y_out, u_out, v_out);
+    return convert_with::<ExplicitAvx2DoubleBlock, _, _>(uyvy_in, yuv_out);
 
     #[cfg(target_arch = "aarch64")]
-    return convert_with::<ExplicitNeon>(uyvy_in, width, height, y_out, u_out, v_out);
+    return convert_with::<ExplicitNeon, _, _>(uyvy_in, yuv_out);
 
     #[allow(unused)]
-    Err(Unsupported)
+    Err(ConversionError("no block processor available"))
 }
 
 #[doc(hidden)]
-pub fn convert_with<P: BlockProcessor>(
-    uyvy_in: &[u8],
-    width: usize,
-    height: usize,
-    y_out: &mut [MaybeUninit<u8>],
-    u_out: &mut [MaybeUninit<u8>],
-    v_out: &mut [MaybeUninit<u8>],
-) -> Result<(), Unsupported> {
+pub fn convert_with<P: BlockProcessor, FI: Frame, BO: FrameBuf>(
+    uyvy_in: &FI,
+    mut yuv_out: BO,
+) -> Result<BO::Frame, ConversionError> {
+    let (width, height) = uyvy_in.pixel_dimensions();
+    if uyvy_in.format() != crate::PixelFormat::UYVY422
+        || yuv_out.format() != crate::PixelFormat::I420
+        || yuv_out.pixel_dimensions() != (width, height)
+    {
+        return Err(ConversionError("invalid arguments"));
+    }
     if width % P::PIXELS != 0 || height % 2 != 0 {
-        return Err(Unsupported);
+        // TODO: support irregular sizes.
+        return Err(ConversionError("irregular sizes unsupported"));
     }
     let p = P::new()?;
     let pixels = width * height;
-    assert!(uyvy_in.len() == pixels * 2);
-    assert!(y_out.len() == pixels);
-    assert!(u_out.len() == pixels / 4);
-    assert!(v_out.len() == pixels / 4);
+    let uyvy_planes = uyvy_in.planes();
+    let [uyvy_in] = &uyvy_planes[..] else {
+        panic!("uyvy_in must have one plane");
+    };
+    let mut yuv_planes = yuv_out.planes();
+    let [y_out, u_out, v_out] = &mut yuv_planes[..] else {
+        panic!("yuv_out must have three planes");
+    };
+    if y_out.stride != width || u_out.stride != width / 2 || v_out.stride != width / 2 {
+        // TODO: support padding.
+        return Err(ConversionError("padding unsupported"));
+    }
+    assert_eq!(uyvy_in.data.len(), pixels * 2);
+    let uyvy_in = uyvy_in.data.as_ptr();
+    assert_eq!(y_out.data.len(), pixels);
+    assert_eq!(u_out.data.len(), pixels / 4);
+    assert_eq!(v_out.data.len(), pixels / 4);
+    let y_out = y_out.data.as_mut_ptr().cast::<u8>();
     let uyvy_row_stride = 2 * width; // TODO: support line padding?
+    let u_out = u_out.data.as_mut_ptr().cast::<u8>();
+    let v_out = v_out.data.as_mut_ptr().cast::<u8>();
     for r in (0..height).step_by(2) {
         for c in (0..width).step_by(P::PIXELS) {
             unsafe {
-                let y_out = y_out.as_mut_ptr().cast::<u8>();
                 p.process(
-                    uyvy_in.as_ptr().add(r * uyvy_row_stride + 2 * c),
-                    uyvy_in.as_ptr().add((r + 1) * uyvy_row_stride + 2 * c),
+                    uyvy_in.add(r * uyvy_row_stride + 2 * c),
+                    uyvy_in.add((r + 1) * uyvy_row_stride + 2 * c),
                     y_out.add(r * width + c),
                     y_out.add((r + 1) * width + c),
-                    u_out
-                        .as_mut_ptr()
-                        .cast::<u8>()
-                        .add((r >> 1) * (width >> 1) + (c >> 1)),
-                    v_out
-                        .as_mut_ptr()
-                        .cast::<u8>()
-                        .add((r >> 1) * (width >> 1) + (c >> 1)),
+                    u_out.add((r >> 1) * (width >> 1) + (c >> 1)),
+                    v_out.add((r >> 1) * (width >> 1) + (c >> 1)),
                 );
             }
         }
     }
-    Ok(())
+    drop(yuv_planes);
+    Ok(unsafe { yuv_out.finish() })
 }
 
 #[allow(dead_code)] // occasionally useful for debugging in tests.
@@ -136,11 +148,11 @@ impl BlockProcessor for ExplicitAvx2DoubleBlock {
     const PIXELS: usize = 64;
 
     #[inline]
-    fn new() -> Result<Self, Unsupported> {
+    fn new() -> Result<Self, ConversionError> {
         if is_x86_feature_detected!("avx2") {
             Ok(Self(()))
         } else {
-            Err(Unsupported)
+            Err(ConversionError)
         }
     }
 
@@ -209,11 +221,11 @@ impl BlockProcessor for ExplicitAvx2SingleBlock {
     const PIXELS: usize = 32;
 
     #[inline]
-    fn new() -> Result<Self, Unsupported> {
+    fn new() -> Result<Self, ConversionError> {
         if is_x86_feature_detected!("avx2") {
             Ok(Self(()))
         } else {
-            Err(Unsupported)
+            Err(ConversionError)
         }
     }
 
@@ -273,11 +285,11 @@ pub struct ExplicitNeon(());
 impl BlockProcessor for ExplicitNeon {
     const PIXELS: usize = 32;
 
-    fn new() -> Result<Self, Unsupported> {
+    fn new() -> Result<Self, ConversionError> {
         if std::arch::is_aarch64_feature_detected!("neon") {
             Ok(Self(()))
         } else {
-            Err(Unsupported)
+            Err(ConversionError("neon unsupported on this machine"))
         }
     }
 
@@ -316,11 +328,11 @@ macro_rules! auto {
             const PIXELS: usize = PIXELS;
 
             #[inline(always)]
-            fn new() -> Result<Self, Unsupported> {
+            fn new() -> Result<Self, ConversionError> {
                 if true && $($supported)+ {
                     Ok(Self(std::array::from_fn(|_| ())))
                 } else {
-                    Err(Unsupported)
+                    Err(ConversionError(concat!(stringify!($ident), " unsupported on this machine")))
                 }
             }
 
@@ -451,6 +463,8 @@ mod tests {
                 /// Tests a full realistic frame.
                 #[test]
                 fn full_frame() {
+                    use crate::PixelFormat;
+
                     // Test input created with:
                     // ```
                     // ffmpeg -y -f lavfi -i testsrc=size=1280x720,format=uyvy422 -frames 1 in.yuv
@@ -460,19 +474,22 @@ mod tests {
                     // example of rounding up, so the output isn't actually from ffmpeg.
                     const WIDTH: usize = 1280;
                     const HEIGHT: usize = 720;
-                    let uyvy_in = include_bytes!("testdata/in.yuv");
-                    let expected_out = include_bytes!("testdata/out.yuv");
-                    let mut actual_out = Vec::with_capacity(3 * WIDTH * HEIGHT / 2);
-                    let (mut y_out, uv_out) =
-                        actual_out.spare_capacity_mut().split_at_mut(WIDTH * HEIGHT);
-                    let (mut u_out, mut v_out) = uv_out.split_at_mut(WIDTH * HEIGHT / 4);
-                    super::super::convert_with::<P>(
-                        uyvy_in, WIDTH, HEIGHT, &mut y_out, &mut u_out, &mut v_out,
-                    )
-                    .unwrap();
-                    unsafe {
-                        actual_out.set_len(3 * WIDTH * HEIGHT / 2);
-                    }
+                    let uyvy_in = crate::frame::ConsecutiveFrame::new_unpadded(
+                        PixelFormat::UYVY422,
+                        WIDTH,
+                        HEIGHT,
+                        &include_bytes!("testdata/in.yuv")[..],
+                    );
+                    let actual_out =
+                        crate::frame::VecFrameBuf::new(PixelFormat::I420, WIDTH, HEIGHT, 0);
+                    let expected_out = crate::frame::ConsecutiveFrame::new_unpadded(
+                        PixelFormat::I420,
+                        WIDTH,
+                        HEIGHT,
+                        &include_bytes!("testdata/out.yuv")[..],
+                    );
+                    let actual_out =
+                        super::super::convert_with::<P, _, _>(&uyvy_in, actual_out).unwrap();
                     // `assert_eq!` output is unhelpful on these large binary arrays.
                     // On failure, it might be better to write to a file and diff with better tools,
                     // e.g.: `diff -u <(xxd src/testdata/out.yuv) <(xxd actual_out_auto.yuv)`
@@ -481,7 +498,7 @@ mod tests {
                     //     &actual_out[..],
                     // )
                     // .unwrap();
-                    assert!(&expected_out[..] == &actual_out[..]);
+                    assert!(expected_out == actual_out.as_ref());
                 }
             }
         };
