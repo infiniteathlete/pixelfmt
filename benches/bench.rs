@@ -52,13 +52,17 @@ fn libyuv<FI: Frame, FO: FrameMut>(input: &FI, output: &mut FO) {
         panic!("expected exactly one plane");
     };
     assert_eq!(uyvy.len(), width * height * 2);
+    assert_eq!(uyvy.stride(), width * 2);
     let mut output_planes = output.planes_mut();
     let [y_out, u_out, v_out] = &mut output_planes[..] else {
         panic!("expected exactly three planes");
     };
     assert_eq!(y_out.len(), width * height);
+    assert_eq!(y_out.stride(), width);
     assert_eq!(u_out.len(), width * height / 4);
+    assert_eq!(u_out.stride(), width / 2);
     assert_eq!(v_out.len(), width * height / 4);
+    assert_eq!(v_out.stride(), width / 2);
     unsafe {
         assert_eq!(
             0,
@@ -66,11 +70,11 @@ fn libyuv<FI: Frame, FO: FrameMut>(input: &FI, output: &mut FO) {
                 uyvy.as_ptr(),
                 uyvy.stride() as i32,
                 y_out.as_mut_ptr(),
-                uyvy.stride() as i32,
+                y_out.stride() as i32,
                 u_out.as_mut_ptr(),
-                uyvy.stride() as i32,
+                u_out.stride() as i32,
                 v_out.as_mut_ptr(),
-                uyvy.stride() as i32,
+                v_out.stride() as i32,
                 width as i32,
                 height as i32,
             )
