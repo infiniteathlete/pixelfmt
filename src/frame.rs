@@ -2,280 +2,394 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Image frame abstractions.
+//!
+//! ```
+//! # use pixelfmt::{PixelFormat, frame::{ConsecutiveFrame, Frame as _}};
+//! // References a 1920x1080 I420 frame held in a slice.
+//! let data = &[0u8; 1920 * 1080 * 3 / 2];
+//! let frame = ConsecutiveFrame::new(PixelFormat::I420, 1920, 1080).with_storage(&data[..]);
+//! assert!(frame.initialized());
+//!
+//! // Allocates a frame which can be used to store a 1920x1080 I420 image.
+//! let mut out = ConsecutiveFrame::new(PixelFormat::I420, 1920, 1080).new_vec();
+//! assert!(!out.initialized());
+//! ```
 
-use std::{mem::MaybeUninit, ops::Deref};
+use std::{marker::PhantomData, mem::MaybeUninit};
 
 use arrayvec::ArrayVec;
 
 use crate::{PixelFormat, PlaneDims, MAX_PLANES};
 
-/// A fully initialized image frame.
-pub trait Frame {
+/// Read access to a raw image frame.
+///
+/// Mutation is via the separate [`FrameMut`] trait.
+///
+/// # Initialization
+///
+/// For efficiency reasons, frames may not be fully initialized when created.
+/// The `Frame` is responsible for tracking its own initialization status and
+/// will panic if asked to give a reference to data within any of its planes
+/// prior to initialization.
+///
+/// Access to potentially uninitialized data requires raw pointers. In
+/// particular, `Frame` does *not* provide access via `&mut MaybeUninit<[u8]>`
+/// because copying from uninitialized memory to this buffer would fill a
+/// `ConsecutiveFrame<&mut [u8]>` with uninitialized data, which would be
+/// unsound.
+///
+/// Safety: the implementor is responsible for the validity of the raw pointers
+/// returned via `planes` and `planes_mut`.
+pub unsafe trait Frame {
     /// Returns the pixel format of the image.
     fn format(&self) -> PixelFormat;
 
     /// Returns the `(width, height)` of the image.
     fn pixel_dimensions(&self) -> (usize, usize);
 
-    /// Returns the (image format-defined) planes.
-    fn planes(&self) -> ArrayVec<FramePlane, MAX_PLANES>;
+    /// Returns true if this frame has been fully initialized.
+    fn initialized(&self) -> bool;
+
+    /// Asserts that this frame is fully initialized.
+    unsafe fn initialize(&mut self);
+
+    /// Returns the (image format-defined) planes for read/shared access.
+    fn planes(&self) -> ArrayVec<FramePlaneRef, MAX_PLANES>;
 }
 
-#[derive(Eq, PartialEq)] // TODO: should `Eq`/`PartialEq` ignore padding bytes?
-pub struct FramePlane<'a> {
-    pub data: &'a [u8],
-    pub stride: usize,
-}
-
-/// A buffer in which an image frame can be placed.
+/// Raw image frame (write access).
 ///
-/// # Safety
-///
-/// Implementors must return the same buffer for each call to `planes`, so that
-/// callers can meaningfully fill the buffer as required by `finish`.
-pub unsafe trait FrameBuf {
-    type Frame: Frame;
+/// See [`Frame`] for more information.
+pub unsafe trait FrameMut: Frame {
+    /// Returns the (image format-defined) planes for mutation/exclusive access.
+    fn planes_mut(&mut self) -> ArrayVec<FramePlaneMut, MAX_PLANES>;
+}
 
-    /// Returns the pixel format of the image.
-    fn format(&self) -> PixelFormat;
+/// Provides read-only access to a given image plane.
+pub struct FramePlaneRef<'a> {
+    data: *const u8,
+    stride: usize,
+    len: usize,
+    initialized: bool,
+    _phantom: PhantomData<&'a [u8]>,
+}
 
-    /// Returns the `(width, height)` of the image.
-    fn pixel_dimensions(&self) -> (usize, usize);
+impl FramePlaneRef<'_> {
+    /// Returns the stride of the plane in bytes.
+    #[inline]
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
 
-    /// Returns the (pixel format-defined) planes.
-    fn planes(&mut self) -> ArrayVec<FrameBufPlane, MAX_PLANES>;
+    /// Returns the total length of the plane in bytes.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
 
-    /// Returns a fully initialized frame from this buffer.
+    /// Returns the plane's data as a slice.
     ///
-    /// # Safety
-    ///
-    /// Caller asserts that it has filled in all bytes of the buffers returned
-    /// by `planes`, including padding.
-    unsafe fn finish(self) -> Self::Frame;
-}
-
-pub struct FrameBufPlane<'a> {
-    pub data: &'a mut [MaybeUninit<u8>],
-    pub stride: usize,
-}
-
-/// A frame buffer which stores all planes consecutively in a single `Vec`.
-pub struct VecFrameBuf {
-    format: PixelFormat,
-    width: usize,
-    height: usize,
-
-    /// Planes' dimensions.
-    /// * planes beyond those required by the format have `stride == rows == 0`.
-    /// * `stride` is sufficient for `width` pixels; may have extra padding.
-    /// * `rows` is correct for `height` with no extra padding.
-    /// * `stride * rows` summmed across all planes does not overflow.
-    dims: [PlaneDims; MAX_PLANES],
-
-    /// A `Vec` with length 0 and sufficient capacity for all planes.
-    data: Vec<u8>,
-}
-
-impl VecFrameBuf {
-    /// Creates a new frame buffer.
-    ///
-    /// Pads each plane's row stride in bytes to be a multiple of the next
-    /// multiple of two greater than or equal to `padding`. Panics on overflow.
-    pub fn new(format: PixelFormat, width: usize, height: usize, padding: usize) -> Self {
-        let mut total_bytes = 0usize;
-        let mut dims = [PlaneDims::default(); MAX_PLANES];
-        let padding_mask = padding
-            .checked_next_power_of_two()
-            .expect("padding should not overflow")
-            - 1;
-        for (dims, min) in dims.iter_mut().zip(format.min_plane_dims(width, height)) {
-            dims.stride = min
-                .stride
-                .checked_add(padding_mask)
-                .expect("plane stride with padding should not overflow")
-                & !padding_mask;
-            dims.rows = min.rows;
-            let plane_bytes = dims
-                .stride
-                .checked_mul(dims.rows)
-                .expect("plane size should not overflow");
-            total_bytes = total_bytes
-                .checked_add(plane_bytes)
-                .expect("total frame size should not overflow");
-        }
-        let data = Vec::with_capacity(total_bytes);
-        Self {
-            format,
-            width,
-            height,
-            dims,
-            data,
-        }
-    }
-}
-
-unsafe impl FrameBuf for VecFrameBuf {
-    type Frame = ConsecutiveFrame<Vec<u8>>;
-
+    /// Panics if the frame has not been initialized.
     #[inline]
-    fn format(&self) -> PixelFormat {
-        self.format
+    pub fn as_ref(&self) -> &[u8] {
+        assert!(self.initialized);
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
 
+    /// Returns a raw pointer to the plane's data, which may be uninitialized.
     #[inline]
-    fn pixel_dimensions(&self) -> (usize, usize) {
-        (self.width, self.height)
-    }
-
-    fn planes(&mut self) -> ArrayVec<FrameBufPlane, MAX_PLANES> {
-        let mut remaining = self.data.spare_capacity_mut();
-        let mut planes = ArrayVec::new();
-        for dims in self.dims.iter().take(self.format.num_planes()) {
-            let (head, tail) = remaining.split_at_mut(dims.stride * dims.rows);
-            planes.push(FrameBufPlane {
-                data: head,
-                stride: dims.stride,
-            });
-            remaining = tail;
-        }
-        planes
-    }
-
-    #[inline]
-    unsafe fn finish(mut self) -> Self::Frame {
-        // SAFETY: `self.data` has sufficient size, and the caller has
-        // promised the spare bytes have been initialized.
-        unsafe {
-            self.data
-                .set_len(self.dims.iter().map(|d| d.stride * d.rows).sum());
-        }
-        ConsecutiveFrame {
-            format: self.format,
-            width: self.width,
-            height: self.height,
-            dims: self.dims,
-            data: self.data,
-        }
-    }
-}
-
-impl From<ConsecutiveFrame<Vec<u8>>> for VecFrameBuf {
-    #[inline]
-    fn from(mut value: ConsecutiveFrame<Vec<u8>>) -> Self {
-        value.data.clear();
-        VecFrameBuf {
-            format: value.format,
-            width: value.width,
-            height: value.height,
-            dims: value.dims,
-            data: value.data,
-        }
-    }
-}
-
-/// A frame in which all planes are stored consecutively.
-pub struct ConsecutiveFrame<T> {
-    format: PixelFormat,
-    width: usize,
-    height: usize,
-
-    /// Planes' dimensions. Invariants are the same as for `VecFrameBuf`.
-    dims: [PlaneDims; MAX_PLANES],
-
-    /// Data; must be exactly the right size for the planes.
-    data: T,
-}
-
-impl<T: Deref<Target = [u8]>> ConsecutiveFrame<T> {
-    /// Returns a new consecutive frame with the given dimensions.
-    ///
-    /// This is the most general form that allows the caller to specify padding.
-    /// Panics if the arguments are inconsistent.
-    pub fn new(
-        format: PixelFormat,
-        width: usize,
-        height: usize,
-        dims: &[PlaneDims],
-        data: T,
-    ) -> Self {
-        assert_eq!(format.num_planes(), dims.len());
-        let mut expected_len = 0usize;
-        for (dims, min) in dims.iter().zip(format.min_plane_dims(width, height)) {
-            assert!(dims.stride >= min.stride);
-            assert!(dims.rows == min.rows);
-            let plane_len = dims
-                .stride
-                .checked_mul(dims.rows)
-                .expect("plane size should not overflow");
-            expected_len = expected_len
-                .checked_add(plane_len)
-                .expect("total frame size should not overflow");
-        }
-        assert_eq!(data.len(), expected_len);
-        Self {
-            format,
-            width,
-            height,
-            dims: std::array::from_fn(|i| dims.get(i).copied().unwrap_or_default()),
-            data,
-        }
-    }
-
-    /// Returns a new consecutive frame with no padding.
-    ///
-    /// Panics if the arguments are inconsistent.
-    pub fn new_unpadded(format: PixelFormat, width: usize, height: usize, data: T) -> Self {
-        let mut expected_len = 0usize;
-        let mut dims = [PlaneDims::default(); MAX_PLANES];
-        for (i, min) in format.min_plane_dims(width, height).enumerate() {
-            dims[i] = min;
-            let plane_len = min
-                .stride
-                .checked_mul(min.rows)
-                .expect("plane size should not overflow");
-            expected_len = expected_len
-                .checked_add(plane_len)
-                .expect("total frame size should not overflow");
-        }
-        assert_eq!(data.len(), expected_len);
-        Self {
-            format,
-            width,
-            height,
-            dims,
-            data,
-        }
-    }
-
-    /// Returns a reference to this (potentially owned) frame.
-    ///
-    /// This can be useful to avoid monomorphization overhead or simply to
-    /// avoid handing off ownership.
-    #[inline]
-    pub fn as_ref(&self) -> ConsecutiveFrame<&[u8]> {
-        ConsecutiveFrame {
-            format: self.format,
-            width: self.width,
-            height: self.height,
-            dims: self.dims,
-            data: &self.data,
-        }
-    }
-
-    /// Returns the underlying storage for the planes.
-    #[inline]
-    pub fn data(&self) -> &T {
-        &self.data
-    }
-
-    /// Consumes the frame and returns the underlying storage for the planes.
-    #[inline]
-    pub fn into_data(self) -> T {
+    pub fn as_ptr(&self) -> *const u8 {
         self.data
     }
 }
 
-impl<T: Deref<Target = [u8]>> Frame for ConsecutiveFrame<T> {
+/// Tests for equality of two `FramePlaneRef`s; this will panic if either is uninitialized.
+impl PartialEq for FramePlaneRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        // TODO: skip padding bytes?
+        self.stride == other.stride && self.len == other.len && self.as_ref() == other.as_ref()
+    }
+}
+
+impl Eq for FramePlaneRef<'_> {}
+
+/// Provides write access to a given image plane.
+pub struct FramePlaneMut<'a> {
+    data: *mut u8,
+    stride: usize,
+    len: usize,
+
+    /// See `FramePlaneRef::initialized`.
+    initialized: bool,
+    _phantom: PhantomData<&'a mut [u8]>,
+}
+
+impl FramePlaneMut<'_> {
+    /// Returns the stride of the plane in bytes.
+    #[inline]
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+
+    /// Returns the total length of the plane in bytes.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns the plane's data as a slice.
+    ///
+    /// Panics if the frame has not been initialized.
+    #[inline]
+    pub fn as_ref(&self) -> &[u8] {
+        assert!(self.initialized);
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
+    }
+
+    /// Returns a raw pointer to the plane's data, which may be uninitialized.
+    #[inline]
+    pub fn as_ptr(&self) -> *const u8 {
+        self.data
+    }
+
+    /// Returns the plane's data as a mutable slice.
+    ///
+    /// Panics if the frame has not been initialized.
+    #[inline]
+    pub fn as_mut(&mut self) -> &mut [u8] {
+        assert!(self.initialized);
+        unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
+    }
+
+    /// Returns a raw mutable pointer to the plane's data, which may be uninitialized.
+    #[inline]
+    pub fn as_mut_ptr(&self) -> *mut u8 {
+        self.data
+    }
+}
+
+/// Tests for equality of two `FramePlaneMut`s; this will panic if either is uninitialized.
+impl PartialEq for FramePlaneMut<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        // TODO: skip padding bytes?
+        self.stride == other.stride && self.len == other.len && self.as_ref() == other.as_ref()
+    }
+}
+
+impl Eq for FramePlaneMut<'_> {}
+
+/// Read access to a backing buffer for a [`ConsecutiveFrame`].
+///
+/// This specifically does *not* use the `MaybeUninit` type to avoid providing
+/// a way to transition bytes from initialized back to uninitialized.
+///
+/// # Safety
+///
+/// * The raw pointer accessors must return stable pointers valid for accessing
+///   at least `len` bytes of data.
+/// * If `PREINITIALIZED` is true, or after the caller writes valid data via
+///   `as_mut_ptr`, the data must be initialized.
+pub unsafe trait Storage {
+    /// Checks if this is a valid storage for `len` bytes, and returns if it
+    /// is known to be initialized.
+    fn check_len(&self, len: usize) -> bool;
+
+    /// Returns a raw pointer to the start of the storage.
+    fn as_ptr(&self) -> *const u8;
+
+    /// Notes that this storage is initialized, up to length `len`.
+    ///
+    /// This may be a no-op, but in the case of `Vec<u8>` it issues a
+    /// `Vec::set_len` call so that `ConsecutiveFrame::into_inner` returns a
+    /// `Vec` with the correct length. Note that the `len` argument here may
+    /// be less than `Vec::capacity`.
+    ///
+    /// Safety: the caller must ensure that the storage is initialized.
+    #[allow(unused_variables)]
+    unsafe fn initialize(&mut self, len: usize) {}
+}
+
+/// Write access to a backing buffer for a [`ConsecutiveFrame`].
+pub unsafe trait StorageMut: Storage {
+    /// Returns a raw pointer to the start of the storage.
+    fn as_mut_ptr(&mut self) -> *mut u8;
+}
+
+unsafe impl Storage for Vec<u8> {
+    #[inline]
+    fn check_len(&self, len: usize) -> bool {
+        assert!(len <= self.capacity());
+        len <= self.len()
+    }
+
+    #[inline]
+    fn as_ptr(&self) -> *const u8 {
+        self.as_ptr()
+    }
+}
+unsafe impl StorageMut for Vec<u8> {
+    #[inline]
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.as_mut_ptr()
+    }
+}
+
+macro_rules! impl_slice_storage {
+    ($t:ty { preinitialized=$preinitialized:expr }) => {
+        unsafe impl Storage for &[$t] {
+            fn check_len(&self, len: usize) -> bool {
+                assert!(len <= <[$t]>::len(self));
+                $preinitialized
+            }
+
+            #[inline]
+            fn as_ptr(&self) -> *const u8 {
+                <[$t]>::as_ptr(self).cast()
+            }
+        }
+        unsafe impl Storage for &mut [$t] {
+            fn check_len(&self, len: usize) -> bool {
+                assert!(len <= <[$t]>::len(self));
+                $preinitialized
+            }
+
+            #[inline]
+            fn as_ptr(&self) -> *const u8 {
+                <[$t]>::as_ptr(self).cast()
+            }
+        }
+        unsafe impl StorageMut for &mut [$t] {
+            #[inline]
+            fn as_mut_ptr(&mut self) -> *mut u8 {
+                <[$t]>::as_mut_ptr(self).cast()
+            }
+        }
+    };
+}
+
+impl_slice_storage!(u8 { preinitialized=true });
+impl_slice_storage!(MaybeUninit<u8> { preinitialized=true });
+
+/// A frame which stores all planes consecutively.
+pub struct ConsecutiveFrame<S> {
+    initialized: bool,
+    format: PixelFormat,
+    width: usize,
+    height: usize,
+
+    /// Planes' dimensions. Invariants:
+    /// * planes beyond those required by the format have `stride == rows == 0`.
+    /// * `stride` is sufficient for `width` pixels; may have extra padding.
+    /// * `rows` is correct for `height` with no extra padding.
+    /// * `stride * rows` summed across all planes does not overflow.
+    dims: [PlaneDims; MAX_PLANES],
+
+    storage: S,
+}
+
+impl<S> ConsecutiveFrame<S> {
+    fn total_size(&self) -> usize {
+        let mut total_size = 0usize;
+        for dims in self.dims.iter() {
+            total_size = total_size
+                .checked_add(dims.stride * dims.rows)
+                .expect("total frame size should not overflow");
+        }
+        total_size
+    }
+}
+
+/// Operations for building a `ConsecutiveFrame`.
+impl ConsecutiveFrame<()> {
+    /// Returns a new builder for a consecutive frame with the given dimensions.
+    ///
+    /// To obtain a useful `Frame` impl, call `new_vec` or `with_storage`.
+    pub fn new(format: PixelFormat, width: usize, height: usize) -> Self {
+        let mut dims = [PlaneDims::default(); MAX_PLANES];
+        for (dim, min) in dims.iter_mut().zip(format.min_plane_dims(width, height)) {
+            *dim = min;
+        }
+        ConsecutiveFrame {
+            initialized: false,
+            format,
+            width,
+            height,
+            dims,
+            storage: (),
+        }
+    }
+
+    /// Pads each plane's row stride in bytes to be a multiple of the next
+    /// multiple of two greater than or equal to `padding`. Panics on overflow.
+    pub fn with_padding(mut self, padding: usize) -> Self {
+        let padding_mask = padding
+            .checked_next_power_of_two()
+            .expect("padding should not overflow")
+            - 1;
+        for dims in self.dims.iter_mut() {
+            dims.stride = dims
+                .stride
+                .checked_add(padding_mask)
+                .expect("plane stride with padding should not overflow")
+                & !padding_mask;
+        }
+        self
+    }
+
+    /// Returns an uninitialized frame backed by a newly allocated `Vec<u8>`.
+    ///
+    /// Panics on overflow or allocation failure.
+    pub fn new_vec(self) -> ConsecutiveFrame<Vec<u8>> {
+        ConsecutiveFrame {
+            initialized: false,
+            format: self.format,
+            width: self.width,
+            height: self.height,
+            dims: self.dims,
+            storage: Vec::with_capacity(self.total_size()),
+        }
+    }
+
+    /// Returns a frame backend by `storage`.
+    ///
+    /// Whether the frame is considered initialized depends on the type of `storage`:
+    /// * `&[u8]` or `&mut [u8]`: initialized.
+    /// * `&[MaybeUninit<u8>]` or `&mut [MaybeUninit<u8>]`: uninitialized.
+    /// * `Vec<u8>`: initialized if `Vec::len` is sufficient.
+    ///
+    /// Panics on overflow or if `storage` is too small.
+    pub fn with_storage<S: Storage>(self, storage: S) -> ConsecutiveFrame<S> {
+        ConsecutiveFrame {
+            initialized: storage.check_len(self.total_size()),
+            format: self.format,
+            width: self.width,
+            height: self.height,
+            dims: self.dims,
+            storage,
+        }
+    }
+}
+
+impl<S: Storage> ConsecutiveFrame<S> {
+    pub fn inner(&self) -> &S {
+        &self.storage
+    }
+
+    pub fn inner_mut(&mut self) -> &mut S {
+        &mut self.storage
+    }
+
+    pub fn into_inner(self) -> S {
+        self.storage
+    }
+}
+
+unsafe impl<S: Storage> Frame for ConsecutiveFrame<S> {
+    #[inline]
+    fn initialized(&self) -> bool {
+        self.initialized
+    }
+
     #[inline]
     fn format(&self) -> PixelFormat {
         self.format
@@ -286,28 +400,49 @@ impl<T: Deref<Target = [u8]>> Frame for ConsecutiveFrame<T> {
         (self.width, self.height)
     }
 
-    fn planes(&self) -> ArrayVec<FramePlane, MAX_PLANES> {
-        let mut remaining = &self.data[..];
+    fn planes(&self) -> ArrayVec<FramePlaneRef, MAX_PLANES> {
+        let ptr = self.storage.as_ptr();
+        let mut off = 0;
         let mut planes = ArrayVec::new();
         for dims in self.dims.iter().take(self.format.num_planes()) {
-            let (head, tail) = remaining.split_at(dims.stride * dims.rows);
-            planes.push(FramePlane {
-                data: head,
+            planes.push(FramePlaneRef {
+                // SAFETY: the invariants on `dim` ensure `data` + `len` are valid.
+                data: unsafe { ptr.byte_add(off) },
                 stride: dims.stride,
+                len: dims.stride * dims.rows,
+                initialized: self.initialized,
+                _phantom: PhantomData,
             });
-            remaining = tail;
+            off += dims.stride * dims.rows;
+        }
+        planes
+    }
+
+    #[inline]
+    unsafe fn initialize(&mut self) {
+        if !self.initialized {
+            self.storage.initialize(self.total_size());
+            self.initialized = true;
+        }
+    }
+}
+
+unsafe impl<S: StorageMut> FrameMut for ConsecutiveFrame<S> {
+    fn planes_mut(&mut self) -> ArrayVec<FramePlaneMut, MAX_PLANES> {
+        let ptr = self.storage.as_mut_ptr();
+        let mut off = 0;
+        let mut planes = ArrayVec::new();
+        for dims in self.dims.iter().take(self.format.num_planes()) {
+            planes.push(FramePlaneMut {
+                // SAFETY: this math is valid because of the invariants on `dims`.
+                data: unsafe { ptr.byte_add(off) },
+                stride: dims.stride,
+                len: dims.stride * dims.rows,
+                initialized: self.initialized,
+                _phantom: PhantomData,
+            });
+            off += dims.stride * dims.rows;
         }
         planes
     }
 }
-
-impl<T: Deref<Target = [u8]>> PartialEq for ConsecutiveFrame<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.format == other.format
-            && self.width == other.width
-            && self.height == other.height
-            && self.planes() == other.planes()
-    }
-}
-
-impl<T: Deref<Target = [u8]>> Eq for ConsecutiveFrame<T> {}

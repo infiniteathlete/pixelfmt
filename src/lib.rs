@@ -43,6 +43,7 @@ pub enum PixelFormat {
     I420,
 }
 
+/// Dimensions of a particular image plane.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct PlaneDims {
     /// The stride for a row, in bytes. This may include extra padding.

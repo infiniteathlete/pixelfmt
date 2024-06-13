@@ -14,7 +14,7 @@ use std::arch::aarch64;
 use std::arch::x86_64;
 
 use crate::{
-    frame::{Frame, FrameBuf},
+    frame::{Frame, FrameMut},
     ConversionError,
 };
 
@@ -48,14 +48,11 @@ pub trait BlockProcessor: Copy + Clone + Sized + Send + Sync {
 
 /// Converts [UYVY](https://fourcc.org/pixel-format/yuv-uyvy/) to [I420](https://fourcc.org/pixel-format/yuv-i420/).
 ///
-/// `uyvy_in` is of the shape `(height, width / 2, 4)` and channels are (U, Y, V, Y).
-/// Guaranteed to initialize and fill the supplied output planes on success.
-/// `y_out` is of the shape `(height, width)`; `u_out` and `v_out` are each of
-/// the shape `(height / 2, width / 2)`.
-pub fn convert<FI: Frame, BO: FrameBuf>(
+/// `uyvy_in` must be fully initialized. `yuv_out` will be fully initialized on success.
+pub fn convert<FI: Frame, FO: FrameMut>(
     uyvy_in: &FI,
-    yuv_out: BO,
-) -> Result<BO::Frame, ConversionError> {
+    yuv_out: &mut FO,
+) -> Result<(), ConversionError> {
     #[cfg(target_arch = "x86_64")]
     return convert_with::<ExplicitAvx2DoubleBlock, _, _>(uyvy_in, yuv_out);
 
@@ -67,10 +64,11 @@ pub fn convert<FI: Frame, BO: FrameBuf>(
 }
 
 #[doc(hidden)]
-pub fn convert_with<P: BlockProcessor, FI: Frame, BO: FrameBuf>(
+pub fn convert_with<P: BlockProcessor, FI: Frame, FO: FrameMut>(
     uyvy_in: &FI,
-    mut yuv_out: BO,
-) -> Result<BO::Frame, ConversionError> {
+    yuv_out: &mut FO,
+) -> Result<(), ConversionError> {
+    assert!(uyvy_in.initialized());
     let (width, height) = uyvy_in.pixel_dimensions();
     if uyvy_in.format() != crate::PixelFormat::UYVY422
         || yuv_out.format() != crate::PixelFormat::I420
@@ -88,23 +86,23 @@ pub fn convert_with<P: BlockProcessor, FI: Frame, BO: FrameBuf>(
     let [uyvy_in] = &uyvy_planes[..] else {
         panic!("uyvy_in must have one plane");
     };
-    let mut yuv_planes = yuv_out.planes();
+    let mut yuv_planes = yuv_out.planes_mut();
     let [y_out, u_out, v_out] = &mut yuv_planes[..] else {
         panic!("yuv_out must have three planes");
     };
-    if y_out.stride != width || u_out.stride != width / 2 || v_out.stride != width / 2 {
+    if y_out.stride() != width || u_out.stride() != width / 2 || v_out.stride() != width / 2 {
         // TODO: support padding.
         return Err(ConversionError("padding unsupported"));
     }
-    assert_eq!(uyvy_in.data.len(), pixels * 2);
-    let uyvy_in = uyvy_in.data.as_ptr();
-    assert_eq!(y_out.data.len(), pixels);
-    assert_eq!(u_out.data.len(), pixels / 4);
-    assert_eq!(v_out.data.len(), pixels / 4);
-    let y_out = y_out.data.as_mut_ptr().cast::<u8>();
+    assert_eq!(uyvy_in.len(), pixels * 2);
+    let uyvy_in = uyvy_in.as_ptr();
+    assert_eq!(y_out.len(), pixels);
+    assert_eq!(u_out.len(), pixels / 4);
+    assert_eq!(v_out.len(), pixels / 4);
+    let y_out = y_out.as_mut_ptr().cast::<u8>();
     let uyvy_row_stride = 2 * width; // TODO: support line padding?
-    let u_out = u_out.data.as_mut_ptr().cast::<u8>();
-    let v_out = v_out.data.as_mut_ptr().cast::<u8>();
+    let u_out = u_out.as_mut_ptr().cast::<u8>();
+    let v_out = v_out.as_mut_ptr().cast::<u8>();
     for r in (0..height).step_by(2) {
         for c in (0..width).step_by(P::PIXELS) {
             unsafe {
@@ -120,7 +118,8 @@ pub fn convert_with<P: BlockProcessor, FI: Frame, BO: FrameBuf>(
         }
     }
     drop(yuv_planes);
-    Ok(unsafe { yuv_out.finish() })
+    unsafe { yuv_out.initialize() };
+    Ok(())
 }
 
 #[allow(dead_code)] // occasionally useful for debugging in tests.
@@ -462,7 +461,10 @@ mod tests {
                 /// Tests a full realistic frame.
                 #[test]
                 fn full_frame() {
-                    use crate::PixelFormat;
+                    use crate::{
+                        frame::{ConsecutiveFrame, Frame as _},
+                        PixelFormat,
+                    };
 
                     // Test input created with:
                     // ```
@@ -473,22 +475,13 @@ mod tests {
                     // example of rounding up, so the output isn't actually from ffmpeg.
                     const WIDTH: usize = 1280;
                     const HEIGHT: usize = 720;
-                    let uyvy_in = crate::frame::ConsecutiveFrame::new_unpadded(
-                        PixelFormat::UYVY422,
-                        WIDTH,
-                        HEIGHT,
-                        &include_bytes!("testdata/in.yuv")[..],
-                    );
-                    let actual_out =
-                        crate::frame::VecFrameBuf::new(PixelFormat::I420, WIDTH, HEIGHT, 0);
-                    let expected_out = crate::frame::ConsecutiveFrame::new_unpadded(
-                        PixelFormat::I420,
-                        WIDTH,
-                        HEIGHT,
-                        &include_bytes!("testdata/out.yuv")[..],
-                    );
-                    let actual_out =
-                        super::super::convert_with::<P, _, _>(&uyvy_in, actual_out).unwrap();
+                    let uyvy_in = ConsecutiveFrame::new(PixelFormat::UYVY422, WIDTH, HEIGHT)
+                        .with_storage(&include_bytes!("testdata/in.yuv")[..]);
+                    let mut actual_out =
+                        ConsecutiveFrame::new(PixelFormat::I420, WIDTH, HEIGHT).new_vec();
+                    let expected_out = ConsecutiveFrame::new(PixelFormat::I420, WIDTH, HEIGHT)
+                        .with_storage(&include_bytes!("testdata/out.yuv")[..]);
+                    super::super::convert_with::<P, _, _>(&uyvy_in, &mut actual_out).unwrap();
                     // `assert_eq!` output is unhelpful on these large binary arrays.
                     // On failure, it might be better to write to a file and diff with better tools,
                     // e.g.: `diff -u <(xxd src/testdata/out.yuv) <(xxd actual_out_auto.yuv)`
@@ -497,7 +490,7 @@ mod tests {
                     //     &actual_out[..],
                     // )
                     // .unwrap();
-                    assert!(expected_out == actual_out.as_ref());
+                    assert!(expected_out.planes() == actual_out.planes());
                 }
             }
         };
