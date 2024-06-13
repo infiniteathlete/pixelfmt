@@ -33,10 +33,10 @@ use crate::{PixelFormat, PlaneDims, MAX_PLANES};
 /// prior to initialization.
 ///
 /// Access to potentially uninitialized data requires raw pointers. In
-/// particular, `Frame` does *not* provide access via `&mut MaybeUninit<[u8]>`
-/// because copying from uninitialized memory to this buffer would fill a
-/// `ConsecutiveFrame<&mut [u8]>` with uninitialized data, which would be
-/// unsound.
+/// particular, `FrameMut` does *not* provide access via
+/// `&mut MaybeUninit<[u8]>` because copying from uninitialized memory to this
+/// buffer would fill a `ConsecutiveFrame<&mut [u8]>` with uninitialized data,
+/// which would be unsound.
 ///
 /// # Safety
 ///
@@ -56,7 +56,8 @@ pub unsafe trait Frame {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that the frame is fully initialized.
+    /// The caller must ensure that the frame is fully initialized, including
+    /// any padding bytes.
     unsafe fn initialize(&mut self);
 
     /// Returns the (image format-defined) planes for read/shared access.
@@ -85,6 +86,23 @@ pub struct FramePlaneRef<'a> {
 }
 
 impl FramePlaneRef<'_> {
+    /// Creates a new `FramePlaneRef`.
+    ///
+    /// # Safety
+    ///
+    /// The caller is responsible for the validity of all arguments and for
+    /// bounding the returned lifetime.
+    #[inline]
+    pub unsafe fn new(data: *const u8, stride: usize, len: usize) -> Self {
+        Self {
+            data,
+            stride,
+            len,
+            initialized: false,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Returns the stride of the plane in bytes.
     #[inline]
     pub fn stride(&self) -> usize {
@@ -136,6 +154,23 @@ pub struct FramePlaneMut<'a> {
 }
 
 impl FramePlaneMut<'_> {
+    /// Creates a new `FramePlaneMut`.
+    ///
+    /// # Safety
+    ///
+    /// The caller is responsible for the validity of all arguments and for
+    /// bounding the returned lifetime.
+    #[inline]
+    pub unsafe fn new(data: *mut u8, stride: usize, len: usize) -> Self {
+        Self {
+            data,
+            stride,
+            len,
+            initialized: false,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Returns the stride of the plane in bytes.
     #[inline]
     pub fn stride(&self) -> usize {
@@ -286,7 +321,7 @@ macro_rules! impl_slice_storage {
 }
 
 impl_slice_storage!(u8 { preinitialized=true });
-impl_slice_storage!(MaybeUninit<u8> { preinitialized=true });
+impl_slice_storage!(MaybeUninit<u8> { preinitialized=false });
 
 /// A frame which stores all planes consecutively.
 pub struct ConsecutiveFrame<S> {
@@ -299,9 +334,12 @@ pub struct ConsecutiveFrame<S> {
     /// * planes beyond those required by the format have `stride == rows == 0`.
     /// * `stride` is sufficient for `width` pixels; may have extra padding.
     /// * `rows` is correct for `height` with no extra padding.
-    /// * `stride * rows` summed across all planes does not overflow.
+    /// * if `storage` is not `()`, `stride * rows` summed across all planes
+    ///   does not overflow. (This invariant is not checked during the builder
+    ///   phase.)
     dims: [PlaneDims; MAX_PLANES],
 
+    /// A [`Storage`] with sufficient capacity for `Self::total_size`, or `()`.
     storage: S,
 }
 

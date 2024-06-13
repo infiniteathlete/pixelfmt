@@ -12,6 +12,7 @@ pub use uyvy_to_i420::convert as convert_uyvy_to_i420;
 
 pub use arrayvec::ArrayVec;
 
+/// The maximum number of image planes defined by any supported [`PixelFormat`].
 pub const MAX_PLANES: usize = 3;
 
 /// Error type for pixel format conversions.
@@ -56,6 +57,7 @@ pub struct PlaneDims {
 
 impl PixelFormat {
     /// Returns the number of planes for this format.
+    #[inline]
     pub fn num_planes(self) -> usize {
         match self {
             PixelFormat::UYVY422 => 1,
@@ -79,16 +81,17 @@ impl PixelFormat {
                     stride: width,
                     rows: height,
                 });
-                let chrome_plane_size = PlaneDims {
+                let chroma_plane_size = PlaneDims {
                     // U/V planes.
                     // Overflow-safe divide by two that rounds up.
                     stride: (width >> 1) + (width & 1),
                     rows: (height >> 1) + (height & 1),
                 };
-                sizes.push(chrome_plane_size);
-                sizes.push(chrome_plane_size);
+                sizes.push(chroma_plane_size);
+                sizes.push(chroma_plane_size);
             }
         }
+        debug_assert_eq!(sizes.len(), self.num_planes());
         sizes.into_iter()
     }
 
