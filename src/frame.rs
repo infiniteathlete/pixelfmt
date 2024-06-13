@@ -234,7 +234,7 @@ impl Eq for FramePlaneMut<'_> {}
 ///
 /// * The raw pointer accessors must return stable pointers valid for accessing
 ///   at least `len` bytes of data.
-/// * If `PREINITIALIZED` is true, or after the caller writes valid data via
+/// * If `check_len` returns true, or after the caller writes valid data via
 ///   `as_mut_ptr`, the data must be initialized.
 pub unsafe trait Storage {
     /// Checks if this is a valid storage for `len` bytes, and returns if it
