@@ -14,6 +14,7 @@ use pixelfmt::{
 ///
 /// This produces nonsense; it's useful only as a memory bandwidth baseline.
 fn memcpy_baseline<FI: Frame, FO: FrameMut>(input: &FI, output: &mut FO) {
+    assert!(input.initialized());
     let input_planes = input.planes();
     let [input] = &input_planes[..] else {
         panic!("expected exactly one plane");
@@ -22,7 +23,7 @@ fn memcpy_baseline<FI: Frame, FO: FrameMut>(input: &FI, output: &mut FO) {
     let [y_out, u_out, v_out] = &mut output_planes[..] else {
         panic!("expected exactly three planes");
     };
-    let (y_in, rest) = input.as_ref().split_at(input.len() / 2);
+    let (y_in, rest) = input.as_slice().split_at(input.len() / 2);
     let (u_in_all, v_in_all) = rest.split_at(rest.len() / 2);
     let (u_in_1, u_in_2) = u_in_all.split_at(u_in_all.len() / 2);
     let (v_in_1, v_in_2) = v_in_all.split_at(v_in_all.len() / 2);
@@ -44,12 +45,13 @@ fn memcpy_baseline<FI: Frame, FO: FrameMut>(input: &FI, output: &mut FO) {
 }
 
 fn libyuv<FI: Frame, FO: FrameMut>(input: &FI, output: &mut FO) {
+    assert!(input.initialized());
     let input_planes = input.planes();
     let (width, height) = input.pixel_dimensions();
     let [uyvy] = &input_planes[..] else {
         panic!("expected exactly one plane");
     };
-    assert_eq!(uyvy.as_ref().len(), width * height * 2);
+    assert_eq!(uyvy.len(), width * height * 2);
     let mut output_planes = output.planes_mut();
     let [y_out, u_out, v_out] = &mut output_planes[..] else {
         panic!("expected exactly three planes");

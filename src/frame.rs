@@ -38,8 +38,10 @@ use crate::{PixelFormat, PlaneDims, MAX_PLANES};
 /// `ConsecutiveFrame<&mut [u8]>` with uninitialized data, which would be
 /// unsound.
 ///
-/// Safety: the implementor is responsible for the validity of the raw pointers
-/// returned via `planes` and `planes_mut`.
+/// # Safety
+///
+/// The implementor is responsible for the validity of the raw pointers returned
+/// via `planes` and `planes_mut`.
 pub unsafe trait Frame {
     /// Returns the pixel format of the image.
     fn format(&self) -> PixelFormat;
@@ -50,7 +52,11 @@ pub unsafe trait Frame {
     /// Returns true if this frame has been fully initialized.
     fn initialized(&self) -> bool;
 
-    /// Asserts that this frame is fully initialized.
+    /// Marks this frame as fully initialized.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the frame is fully initialized.
     unsafe fn initialize(&mut self);
 
     /// Returns the (image format-defined) planes for read/shared access.
@@ -60,6 +66,10 @@ pub unsafe trait Frame {
 /// Raw image frame (write access).
 ///
 /// See [`Frame`] for more information.
+///
+/// # Safety
+///
+/// As with `Frame`.
 pub unsafe trait FrameMut: Frame {
     /// Returns the (image format-defined) planes for mutation/exclusive access.
     fn planes_mut(&mut self) -> ArrayVec<FramePlaneMut, MAX_PLANES>;
@@ -82,6 +92,7 @@ impl FramePlaneRef<'_> {
     }
 
     /// Returns the total length of the plane in bytes.
+    #[allow(clippy::len_without_is_empty)] // empty frames are silly.
     #[inline]
     pub fn len(&self) -> usize {
         self.len
@@ -91,7 +102,7 @@ impl FramePlaneRef<'_> {
     ///
     /// Panics if the frame has not been initialized.
     #[inline]
-    pub fn as_ref(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         assert!(self.initialized);
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
@@ -107,7 +118,7 @@ impl FramePlaneRef<'_> {
 impl PartialEq for FramePlaneRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         // TODO: skip padding bytes?
-        self.stride == other.stride && self.len == other.len && self.as_ref() == other.as_ref()
+        self.stride == other.stride && self.len == other.len && self.as_slice() == other.as_slice()
     }
 }
 
@@ -132,6 +143,7 @@ impl FramePlaneMut<'_> {
     }
 
     /// Returns the total length of the plane in bytes.
+    #[allow(clippy::len_without_is_empty)] // empty frames are silly.
     #[inline]
     pub fn len(&self) -> usize {
         self.len
@@ -141,7 +153,7 @@ impl FramePlaneMut<'_> {
     ///
     /// Panics if the frame has not been initialized.
     #[inline]
-    pub fn as_ref(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         assert!(self.initialized);
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
@@ -156,7 +168,7 @@ impl FramePlaneMut<'_> {
     ///
     /// Panics if the frame has not been initialized.
     #[inline]
-    pub fn as_mut(&mut self) -> &mut [u8] {
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
         assert!(self.initialized);
         unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
     }
@@ -172,7 +184,7 @@ impl FramePlaneMut<'_> {
 impl PartialEq for FramePlaneMut<'_> {
     fn eq(&self, other: &Self) -> bool {
         // TODO: skip padding bytes?
-        self.stride == other.stride && self.len == other.len && self.as_ref() == other.as_ref()
+        self.stride == other.stride && self.len == other.len && self.as_slice() == other.as_slice()
     }
 }
 
@@ -204,12 +216,18 @@ pub unsafe trait Storage {
     /// `Vec` with the correct length. Note that the `len` argument here may
     /// be less than `Vec::capacity`.
     ///
-    /// Safety: the caller must ensure that the storage is initialized.
+    /// # Safety
+    ///
+    /// The caller must ensure that the storage is initialized.
     #[allow(unused_variables)]
     unsafe fn initialize(&mut self, len: usize) {}
 }
 
 /// Write access to a backing buffer for a [`ConsecutiveFrame`].
+///
+/// # Safety
+///
+/// As in [`Storage`].
 pub unsafe trait StorageMut: Storage {
     /// Returns a raw pointer to the start of the storage.
     fn as_mut_ptr(&mut self) -> *mut u8;
