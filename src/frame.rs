@@ -136,7 +136,9 @@ impl FramePlaneRef<'_> {
 impl PartialEq for FramePlaneRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         // TODO: skip padding bytes?
-        self.stride == other.stride && self.len == other.len && self.as_slice() == other.as_slice()
+        let self_slice = self.as_slice();
+        let other_slice = other.as_slice();
+        self.stride == other.stride && self.len == other.len && self_slice == other_slice
     }
 }
 
@@ -219,7 +221,9 @@ impl FramePlaneMut<'_> {
 impl PartialEq for FramePlaneMut<'_> {
     fn eq(&self, other: &Self) -> bool {
         // TODO: skip padding bytes?
-        self.stride == other.stride && self.len == other.len && self.as_slice() == other.as_slice()
+        let self_slice = self.as_slice();
+        let other_slice = other.as_slice();
+        self.stride == other.stride && self.len == other.len && self_slice == other_slice
     }
 }
 
