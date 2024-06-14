@@ -39,13 +39,18 @@ impl std::error::Error for ConversionError {}
 pub enum PixelFormat {
     /// [UYVY](https://fourcc.org/pixel-format/yuv-uyvy/).
     ///
-    /// Matches ffmpeg's `AV_PIX_FMT_UYVY422`: packed YUV 4:2:2, 16bpp, Cb Y0 Cr Y1.
+    /// Matches ffmpeg's `AV_PIX_FMT_UYVY422`: "packed YUV 4:2:2, 16bpp, Cb Y0 Cr Y1".
     UYVY422,
 
     /// [I420](https://fourcc.org/pixel-format/yuv-i420/).
     ///
-    /// Matches ffmpeg's `AV_PIX_FMT_YUV420P`: planar YUV 4:2:0, 12bpp, (1 Cr & Cb sample per 2x2 Y samples).
+    /// Matches ffmpeg's `AV_PIX_FMT_YUV420P`: "planar YUV 4:2:0, 12bpp, (1 Cr & Cb sample per 2x2 Y samples)".
     I420,
+
+    /// BGRA.
+    ///
+    /// Matches ffmpeg's `AV_PIX_FMT_BGRA`: "packed BGRA 8:8:8:8, 32bpp, BGRABGRA...".
+    BGRA,
 }
 
 /// Dimensions of a particular image plane.
@@ -66,6 +71,7 @@ impl PixelFormat {
         match self {
             PixelFormat::UYVY422 => 1,
             PixelFormat::I420 => 3,
+            PixelFormat::BGRA => 1,
         }
     }
 
@@ -93,7 +99,13 @@ impl PixelFormat {
                 };
                 sizes.push(chroma_plane_size);
                 sizes.push(chroma_plane_size);
-            }
+            },
+            PixelFormat::BGRA => {
+                sizes.push(PlaneDims {
+                    stride: width.checked_shl(2).expect("stride should not overflow"),
+                    rows: height,
+                });
+            },
         }
         debug_assert_eq!(sizes.len(), self.num_planes());
         sizes.into_iter()
@@ -104,6 +116,7 @@ impl PixelFormat {
         match self {
             PixelFormat::UYVY422 => &["YUYV"],
             PixelFormat::I420 => &["Y", "U", "V"],
+            PixelFormat::BGRA => &["BGRA"],
         }
     }
 }
