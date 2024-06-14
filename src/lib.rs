@@ -10,7 +10,11 @@ pub mod frame;
 
 pub use uyvy_to_i420::convert as convert_uyvy_to_i420;
 
-pub use arrayvec::ArrayVec;
+/// Re-export of the `arrayvec` version used by this crate.
+///
+/// [`arrayvec::ArrayVec`] is exposed in e.g. [`crate::frame::Frame::planes`], and callers may
+/// wish to use matching types.
+pub use arrayvec;
 
 /// The maximum number of image planes defined by any supported [`PixelFormat`].
 pub const MAX_PLANES: usize = 3;
@@ -67,7 +71,7 @@ impl PixelFormat {
 
     /// Returns the plane dimensions at minimum stride (no extra bytes for padding).
     pub fn min_plane_dims(self, width: usize, height: usize) -> impl Iterator<Item = PlaneDims> {
-        let mut sizes = ArrayVec::<PlaneDims, MAX_PLANES>::new();
+        let mut sizes = arrayvec::ArrayVec::<PlaneDims, MAX_PLANES>::new();
         match self {
             PixelFormat::UYVY422 => {
                 sizes.push(PlaneDims {
