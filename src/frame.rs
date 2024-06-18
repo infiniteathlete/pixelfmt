@@ -85,7 +85,7 @@ pub struct FramePlaneRef<'a> {
     _phantom: PhantomData<&'a [u8]>,
 }
 
-impl FramePlaneRef<'_> {
+impl<'p> FramePlaneRef<'p> {
     /// Creates a new `FramePlaneRef`.
     ///
     /// # Safety
@@ -120,7 +120,7 @@ impl FramePlaneRef<'_> {
     ///
     /// Panics if the frame has not been initialized.
     #[inline]
-    pub fn as_slice(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &'p [u8] {
         assert!(self.initialized);
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
@@ -328,6 +328,7 @@ impl_slice_storage!(u8 { preinitialized=true });
 impl_slice_storage!(MaybeUninit<u8> { preinitialized=false });
 
 /// A frame which stores all planes consecutively.
+#[derive(Clone)]
 pub struct ConsecutiveFrame<S> {
     initialized: bool,
     format: PixelFormat,
