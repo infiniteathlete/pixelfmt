@@ -99,13 +99,13 @@ impl PixelFormat {
                 };
                 sizes.push(chroma_plane_size);
                 sizes.push(chroma_plane_size);
-            },
+            }
             PixelFormat::BGRA => {
                 sizes.push(PlaneDims {
                     stride: width.checked_shl(2).expect("stride should not overflow"),
                     rows: height,
                 });
-            },
+            }
         }
         debug_assert_eq!(sizes.len(), self.num_planes());
         sizes.into_iter()
