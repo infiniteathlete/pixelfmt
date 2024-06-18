@@ -61,7 +61,7 @@ pub unsafe trait Frame {
     unsafe fn initialize(&mut self);
 
     /// Returns the (image format-defined) planes for read/shared access.
-    fn planes(&self) -> ArrayVec<FramePlaneRef, MAX_PLANES>;
+    fn planes<'s>(&'s self) -> ArrayVec<FramePlaneRef<'s>, MAX_PLANES>;
 }
 
 /// Raw image frame (write access).
@@ -73,7 +73,7 @@ pub unsafe trait Frame {
 /// As with `Frame`.
 pub unsafe trait FrameMut: Frame {
     /// Returns the (image format-defined) planes for mutation/exclusive access.
-    fn planes_mut(&mut self) -> ArrayVec<FramePlaneMut, MAX_PLANES>;
+    fn planes_mut<'s>(&'s mut self) -> ArrayVec<FramePlaneMut<'s>, MAX_PLANES>;
 }
 
 /// Provides read-only access to a given image plane.
