@@ -123,8 +123,7 @@ pub fn convert_with<P: RowProcessor, FI: Frame, FO: FrameMut>(
     if r < height {
         // Process the last row, without subsampling vertically.
         unsafe {
-            // XXX: use p.process.
-            fallback(
+            p.process(
                 width,
                 uyvy_in.add(r * uyvy_stride),
                 uyvy_in.add(r * uyvy_stride), // aliased!
@@ -644,11 +643,11 @@ mod tests {
                     // `assert_eq!` output is unhelpful on these large binary arrays.
                     // On failure, it might be better to write to a file and diff with better tools,
                     // e.g.: `diff -u <(xxd src/testdata/out.yuv) <(xxd actual_out_auto.yuv)`
-                    std::fs::write(
-                        concat!("actual_out_", stringify!($mod), ".yuv"),
-                        &actual_out.inner(),
-                    )
-                    .unwrap();
+                    // std::fs::write(
+                    //     concat!("actual_out_", stringify!($mod), ".yuv"),
+                    //     &actual_out.inner(),
+                    // )
+                    // .unwrap();
                     assert!(expected_out.planes() == actual_out.planes());
                 }
 
