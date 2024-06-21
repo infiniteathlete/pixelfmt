@@ -52,14 +52,6 @@ pub unsafe trait Frame {
     /// Returns true if this frame has been fully initialized.
     fn initialized(&self) -> bool;
 
-    /// Marks this frame as fully initialized.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the frame is fully initialized, including
-    /// any padding bytes.
-    unsafe fn initialize(&mut self);
-
     /// Returns the (image format-defined) planes for read/shared access.
     fn planes(&self) -> ArrayVec<FramePlaneRef, MAX_PLANES>;
 }
@@ -74,6 +66,14 @@ pub unsafe trait Frame {
 pub unsafe trait FrameMut: Frame {
     /// Returns the (image format-defined) planes for mutation/exclusive access.
     fn planes_mut(&mut self) -> ArrayVec<FramePlaneMut, MAX_PLANES>;
+
+    /// Marks this frame as fully initialized.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the frame is fully initialized, including
+    /// any padding bytes.
+    unsafe fn initialize(&mut self);
 }
 
 /// Provides read-only access to a given image plane.
@@ -247,6 +247,16 @@ pub unsafe trait Storage {
 
     /// Returns a raw pointer to the start of the storage.
     fn as_ptr(&self) -> *const u8;
+}
+
+/// Write access to a backing buffer for a [`ConsecutiveFrame`].
+///
+/// # Safety
+///
+/// As in [`Storage`].
+pub unsafe trait StorageMut: Storage {
+    /// Returns a raw pointer to the start of the storage.
+    fn as_mut_ptr(&mut self) -> *mut u8;
 
     /// Notes that this storage is initialized, up to length `len`.
     ///
@@ -260,16 +270,6 @@ pub unsafe trait Storage {
     /// The caller must ensure that the storage is initialized.
     #[allow(unused_variables)]
     unsafe fn initialize(&mut self, len: usize) {}
-}
-
-/// Write access to a backing buffer for a [`ConsecutiveFrame`].
-///
-/// # Safety
-///
-/// As in [`Storage`].
-pub unsafe trait StorageMut: Storage {
-    /// Returns a raw pointer to the start of the storage.
-    fn as_mut_ptr(&mut self) -> *mut u8;
 }
 
 unsafe impl Storage for Vec<u8> {
@@ -288,6 +288,11 @@ unsafe impl StorageMut for Vec<u8> {
     #[inline]
     fn as_mut_ptr(&mut self) -> *mut u8 {
         self.as_mut_ptr()
+    }
+
+    #[inline]
+    unsafe fn initialize(&mut self, len: usize) {
+        unsafe { self.set_len(len) };
     }
 }
 
@@ -478,14 +483,6 @@ unsafe impl<S: Storage> Frame for ConsecutiveFrame<S> {
         }
         planes
     }
-
-    #[inline]
-    unsafe fn initialize(&mut self) {
-        if !self.initialized {
-            self.storage.initialize(self.total_size());
-            self.initialized = true;
-        }
-    }
 }
 
 unsafe impl<S: StorageMut> FrameMut for ConsecutiveFrame<S> {
@@ -505,5 +502,13 @@ unsafe impl<S: StorageMut> FrameMut for ConsecutiveFrame<S> {
             off += dims.stride * dims.rows;
         }
         planes
+    }
+
+    #[inline]
+    unsafe fn initialize(&mut self) {
+        if !self.initialized {
+            self.storage.initialize(self.total_size());
+            self.initialized = true;
+        }
     }
 }
