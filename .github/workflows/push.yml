@@ -12,6 +12,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     strategy:
+      fail-fast: false
       matrix:
         runner: [ubuntu-latest, macos-latest]
     steps:
@@ -31,3 +32,18 @@ jobs:
     - run: cargo clippy -- --deny warnings
     - run: cargo test --release
     - run: cargo criterion
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+        components: miri
+    - name: Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: miri
+    - run: cargo miri test

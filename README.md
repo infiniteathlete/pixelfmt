@@ -14,14 +14,10 @@ Limitations and future work:
 *   Returns `Err` on x86\_64 CPUs that don't support
     AVX2. We'll likely add an SSE2 fallback later. As SSE2 is in the core
     x86\_64 instruction set, this would mean all x86\_64 CPUs would be supported.
-*   Returns `Err` for frame widths that aren't a multiple
-    of 64 pixels (for AVX2) or 32 pixels (for NEON). This could be eased via a
-    scalar fallback path for the remaining pixels, or (for AVX2) masked
-    load/store instructions.
-*   Returns `Err` for frame heights that aren't a multiple of 2.
 *   Expects to process full horizontal lines. This is likely to
-    change to allow working on cropped regions and outputting to frames with
-    extra padding between lines as required by some APIs/devices.
+    change to allow working on cropped regions.
+*   Does not support output to a frame with padding, as required by some
+    APIs/devices.
 *   The ARM NEON code is less optimized than the AVX2 code today.
 
 You may find the notes in [`docs/simd.md`](docs/simd.md) helpful if you are new

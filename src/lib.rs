@@ -40,11 +40,17 @@ pub enum PixelFormat {
     /// [UYVY](https://fourcc.org/pixel-format/yuv-uyvy/).
     ///
     /// Matches ffmpeg's `AV_PIX_FMT_UYVY422`: "packed YUV 4:2:2, 16bpp, Cb Y0 Cr Y1".
+    ///
+    /// For odd-width images, the width is rounded up to the next multiple of 2,
+    /// with the final `Y` as a don't-care byte, and the final chroma values not
+    /// subsampled.
     UYVY422,
 
     /// [I420](https://fourcc.org/pixel-format/yuv-i420/).
     ///
     /// Matches ffmpeg's `AV_PIX_FMT_YUV420P`: "planar YUV 4:2:0, 12bpp, (1 Cr & Cb sample per 2x2 Y samples)".
+    ///
+    /// For odd-width and odd-height images, the final pixel is not subsampled.
     I420,
 
     /// BGRA.
@@ -81,7 +87,11 @@ impl PixelFormat {
         match self {
             PixelFormat::UYVY422 => {
                 sizes.push(PlaneDims {
-                    stride: width.checked_shl(1).expect("stride should not overflow"),
+                    // Round to next multiple of 2, then double.
+                    stride: width
+                        .checked_add(width & 1)
+                        .and_then(|w| w.checked_shl(1))
+                        .expect("stride should not overflow"),
                     rows: height,
                 });
             }
@@ -91,8 +101,8 @@ impl PixelFormat {
                     stride: width,
                     rows: height,
                 });
+                // U/V planes.
                 let chroma_plane_size = PlaneDims {
-                    // U/V planes.
                     // Overflow-safe divide by two that rounds up.
                     stride: (width >> 1) + (width & 1),
                     rows: (height >> 1) + (height & 1),
@@ -118,5 +128,60 @@ impl PixelFormat {
             PixelFormat::I420 => &["Y", "U", "V"],
             PixelFormat::BGRA => &["BGRA"],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn odd_sizes() {
+        assert_eq!(
+            super::PixelFormat::UYVY422
+                .min_plane_dims(1, 1)
+                .collect::<Vec<_>>(),
+            vec![super::PlaneDims { stride: 4, rows: 1 }]
+        );
+        assert_eq!(
+            super::PixelFormat::UYVY422
+                .min_plane_dims(2, 2)
+                .collect::<Vec<_>>(),
+            vec![super::PlaneDims { stride: 4, rows: 2 }]
+        );
+        assert_eq!(
+            super::PixelFormat::UYVY422
+                .min_plane_dims(3, 3)
+                .collect::<Vec<_>>(),
+            vec![super::PlaneDims { stride: 8, rows: 3 }]
+        );
+        assert_eq!(
+            super::PixelFormat::I420
+                .min_plane_dims(1, 1)
+                .collect::<Vec<_>>(),
+            vec![
+                super::PlaneDims { stride: 1, rows: 1 },
+                super::PlaneDims { stride: 1, rows: 1 },
+                super::PlaneDims { stride: 1, rows: 1 }
+            ]
+        );
+        assert_eq!(
+            super::PixelFormat::I420
+                .min_plane_dims(2, 2)
+                .collect::<Vec<_>>(),
+            vec![
+                super::PlaneDims { stride: 2, rows: 2 },
+                super::PlaneDims { stride: 1, rows: 1 },
+                super::PlaneDims { stride: 1, rows: 1 }
+            ]
+        );
+        assert_eq!(
+            super::PixelFormat::I420
+                .min_plane_dims(3, 3)
+                .collect::<Vec<_>>(),
+            vec![
+                super::PlaneDims { stride: 3, rows: 3 },
+                super::PlaneDims { stride: 2, rows: 2 },
+                super::PlaneDims { stride: 2, rows: 2 }
+            ]
+        );
     }
 }
