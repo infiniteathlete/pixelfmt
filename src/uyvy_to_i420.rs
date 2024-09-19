@@ -153,6 +153,7 @@ unsafe fn hexprint(v: std::arch::x86_64::__m256i) -> impl std::fmt::Display {
     )
 }
 
+#[inline(never)]
 unsafe fn fallback(
     width: usize,
     top_uyvy_addr: *const u8,
@@ -205,12 +206,12 @@ impl RowProcessor for ExplicitAvx2DoubleBlock {
     unsafe fn process(
         self,
         width: usize,
-        top_uyvy_addr: *const u8,
-        bot_uyvy_addr: *const u8,
-        top_y_addr: *mut u8,
-        bot_y_addr: *mut u8,
-        u_addr: *mut u8,
-        v_addr: *mut u8,
+        mut top_uyvy_addr: *const u8,
+        mut bot_uyvy_addr: *const u8,
+        mut top_y_addr: *mut u8,
+        mut bot_y_addr: *mut u8,
+        mut u_addr: *mut u8,
+        mut v_addr: *mut u8,
     ) {
         // Put data[i] into 32-bit groups: lower 128-bits = (y0 y1 u0 v0) upper = (y2 y3 u1 v1).
         // Source indexes, applied to each 128-bit lane within the 256-bit register.
@@ -220,26 +221,19 @@ impl RowProcessor for ExplicitAvx2DoubleBlock {
         ));
 
         // Process the nice blocks.
-        const BLOCK_SIZE: usize = 64;
         let mut i = 0;
-        loop {
-            let top_uyvy_addr = top_uyvy_addr.add(2 * i);
-            let bot_uyvy_addr = bot_uyvy_addr.add(2 * i);
-            let top_y_addr = top_y_addr.add(i);
-            let bot_y_addr = bot_y_addr.add(i);
-            let u_addr = u_addr.add(i / 2);
-            let v_addr = v_addr.add(i / 2);
-            if i + BLOCK_SIZE > width {
-                break;
-            }
-            let [top, bot] = [top_uyvy_addr, bot_uyvy_addr].map(|uyvy_addr| -> [_; 4] {
+        const BLOCK_SIZE: usize = 64;
+        while i + BLOCK_SIZE <= width {
+            let load = |uyvy_addr: *const u8| -> [_; 4] {
                 std::array::from_fn(|i| {
                     // VMOVDQU (YMM, M256) on Zen2: lat <8, cpi 0.5
                     let raw = x86_64::_mm256_loadu_si256(uyvy_addr.add(32 * i) as _);
                     // VPSHUFB (YMM, YMM, YMM) on Zen2: lat 1; cpi 0.5; ports 1*FP12.
                     x86_64::_mm256_shuffle_epi8(raw, shuf_indices)
                 })
-            });
+            };
+            let top = load(top_uyvy_addr);
+            let bot = load(bot_uyvy_addr);
             for (data, addr) in [(top, top_y_addr), (bot, bot_y_addr)] {
                 for i in [0, 1] {
                     // Put into 64-groups: y0 y2 y1 y3.
@@ -268,16 +262,22 @@ impl RowProcessor for ExplicitAvx2DoubleBlock {
             x86_64::_mm256_storeu_si256(u_addr as _, x86_64::_mm256_unpacklo_epi32(uv0prime, mix));
             x86_64::_mm256_storeu_si256(v_addr as _, x86_64::_mm256_unpackhi_epi32(uv0prime, mix));
             i += BLOCK_SIZE;
+            top_uyvy_addr = top_uyvy_addr.add(2 * BLOCK_SIZE);
+            bot_uyvy_addr = bot_uyvy_addr.add(2 * BLOCK_SIZE);
+            top_y_addr = top_y_addr.add(BLOCK_SIZE);
+            bot_y_addr = bot_y_addr.add(BLOCK_SIZE);
+            u_addr = u_addr.add(BLOCK_SIZE / 2);
+            v_addr = v_addr.add(BLOCK_SIZE / 2);
         }
         if i < width {
             fallback(
                 width - i,
-                top_uyvy_addr.add(2 * i),
-                bot_uyvy_addr.add(2 * i),
-                top_y_addr.add(i),
-                bot_y_addr.add(i),
-                u_addr.add(i / 2),
-                v_addr.add(i / 2),
+                top_uyvy_addr,
+                bot_uyvy_addr,
+                top_y_addr,
+                bot_y_addr,
+                u_addr,
+                v_addr,
             );
         }
     }
@@ -304,12 +304,12 @@ impl RowProcessor for ExplicitAvx2SingleBlock {
     unsafe fn process(
         self,
         width: usize,
-        top_uyvy_addr: *const u8,
-        bot_uyvy_addr: *const u8,
-        top_y_addr: *mut u8,
-        bot_y_addr: *mut u8,
-        u_addr: *mut u8,
-        v_addr: *mut u8,
+        mut top_uyvy_addr: *const u8,
+        mut bot_uyvy_addr: *const u8,
+        mut top_y_addr: *mut u8,
+        mut bot_y_addr: *mut u8,
+        mut u_addr: *mut u8,
+        mut v_addr: *mut u8,
     ) {
         // Put data[i] into 32-bit groups: lower 128-bits = (y0 y1 u0 v0) upper = (y2 y3 u1 v1).
         // Source indexes, applied to each 128-bit lane within the 256-bit register.
@@ -320,24 +320,17 @@ impl RowProcessor for ExplicitAvx2SingleBlock {
         // Process the nice blocks.
         const BLOCK_SIZE: usize = 32;
         let mut i = 0;
-        loop {
-            let top_uyvy_addr = top_uyvy_addr.add(2 * i);
-            let bot_uyvy_addr = bot_uyvy_addr.add(2 * i);
-            let top_y_addr = top_y_addr.add(i);
-            let bot_y_addr = bot_y_addr.add(i);
-            let u_addr = u_addr.add(i / 2);
-            let v_addr = v_addr.add(i / 2);
-            if i + BLOCK_SIZE > width {
-                break;
-            }
-            let [top, bot] = [top_uyvy_addr, bot_uyvy_addr].map(|uyvy_addr| -> [_; 2] {
+        while i + BLOCK_SIZE <= width {
+            let load = |uyvy_addr: *const u8| -> [_; 2] {
                 std::array::from_fn(|i| {
                     // VMOVDQU (YMM, M256) on Zen2: lat <8, cpi 0.5
                     let raw = x86_64::_mm256_loadu_si256(uyvy_addr.add(32 * i) as _);
                     // VPSHUFB (YMM, YMM, YMM) on Zen2: lat 1; cpi 0.5; ports 1*FP12.
                     x86_64::_mm256_shuffle_epi8(raw, shuf_indices)
                 })
-            });
+            };
+            let top = load(top_uyvy_addr);
+            let bot = load(bot_uyvy_addr);
             for (data, y_addr) in [(top, top_y_addr), (bot, bot_y_addr)] {
                 let y = x86_64::_mm256_unpacklo_epi64(data[0], data[1]);
                 // VMOVDQU (M256, YMM) on Zen2: ports 1*FP2.
@@ -358,16 +351,22 @@ impl RowProcessor for ExplicitAvx2SingleBlock {
                 x86_64::_mm256_permutevar8x32_epi32(uv, p),
             );
             i += BLOCK_SIZE;
+            top_uyvy_addr = top_uyvy_addr.add(2 * BLOCK_SIZE);
+            bot_uyvy_addr = bot_uyvy_addr.add(2 * BLOCK_SIZE);
+            top_y_addr = top_y_addr.add(BLOCK_SIZE);
+            bot_y_addr = bot_y_addr.add(BLOCK_SIZE);
+            u_addr = u_addr.add(BLOCK_SIZE / 2);
+            v_addr = v_addr.add(BLOCK_SIZE / 2);
         }
         if i < width {
             fallback(
                 width - i,
-                top_uyvy_addr.add(2 * i),
-                bot_uyvy_addr.add(2 * i),
-                top_y_addr.add(i),
-                bot_y_addr.add(i),
-                u_addr.add(i / 2),
-                v_addr.add(i / 2),
+                top_uyvy_addr,
+                bot_uyvy_addr,
+                top_y_addr,
+                bot_y_addr,
+                u_addr,
+                v_addr,
             );
         }
     }
@@ -402,10 +401,7 @@ impl RowProcessor for ExplicitNeon {
     ) {
         const BLOCK_SIZE: usize = 32;
         let mut i = 0;
-        loop {
-            if i + BLOCK_SIZE > width {
-                break;
-            }
+        while i + BLOCK_SIZE <= width {
             let top_uyvy = aarch64::vld4q_u8(top_uyvy_addr.add(2 * i));
             let bot_uyvy = aarch64::vld4q_u8(bot_uyvy_addr.add(2 * i));
             aarch64::vst2q_u8(
