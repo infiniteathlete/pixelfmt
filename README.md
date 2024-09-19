@@ -11,9 +11,6 @@ Limitations and future work:
     [UYVY](https://fourcc.org/pixel-format/yuv-uyvy/) to
     [I420](https://fourcc.org/pixel-format/yuv-i420/).
     More will be added as needed.
-*   Returns `Err` on x86\_64 CPUs that don't support
-    AVX2. We'll likely add an SSE2 fallback later. As SSE2 is in the core
-    x86\_64 instruction set, this would mean all x86\_64 CPUs would be supported.
 *   Expects to process full horizontal lines. This is likely to
     change to allow working on cropped regions.
 *   Does not support output to a frame with padding, as required by some

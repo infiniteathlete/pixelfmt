@@ -105,18 +105,14 @@ fn bench_common<const FRAMES_PER_ITER: usize>(
         (inputs.len() * (WIDTH * HEIGHT * 7) / 2) as u64,
     ));
     macro_rules! bench_block {
-        ($name:literal, $impl:ty) => {
+        ($name:literal, $p:expr) => {
+            let p = $p;
             g.bench_function($name, |b| {
                 b.iter(|| {
                     for i in &inputs {
-                        black_box(
-                            convert_with::<$impl, _, _>(
-                                i,
-                                &mut ConsecutiveFrame::new(PixelFormat::I420, WIDTH, HEIGHT)
-                                    .new_vec(),
-                            )
-                            .unwrap(),
-                        );
+                        let mut f =
+                            ConsecutiveFrame::new(PixelFormat::I420, WIDTH, HEIGHT).new_vec();
+                        black_box(convert_with(p, i, &mut f).unwrap());
                     }
                 })
             });
@@ -144,16 +140,27 @@ fn bench_common<const FRAMES_PER_ITER: usize>(
         })
     });
     #[cfg(target_arch = "x86_64")]
-    bench_block!("explicit_avx2_double", ExplicitAvx2DoubleBlock);
+    bench_block!(
+        "explicit_avx2_double",
+        ExplicitAvx2DoubleBlock::try_new().unwrap()
+    );
     #[cfg(target_arch = "x86_64")]
-    bench_block!("explicit_avx2_single", ExplicitAvx2SingleBlock);
+    bench_block!(
+        "explicit_avx2_single",
+        ExplicitAvx2SingleBlock::try_new().unwrap()
+    );
     #[cfg(target_arch = "x86_64")]
-    bench_block!("auto_avx2_64", AutoAvx2Block<64>);
+    bench_block!("explicit_sse2", ExplicitSse2::new());
+    #[cfg(target_arch = "x86_64")]
+    bench_block!("auto_avx2_64", AutoAvx2Block::<64>::try_new().unwrap());
     #[cfg(target_arch = "aarch64")]
-    bench_block!("explicit_neon", ExplicitNeon);
+    bench_block!("explicit_neon", ExplicitNeon::try_new().unwrap());
     #[cfg(target_arch = "aarch64")]
-    bench_block!("auto_neon_64", AutoNeonBlock<64>);
-    bench_block!("auto_vanilla_64", AutoVanillaBlock<64>);
+    bench_block!("auto_neon_64", AutoNeonBlock::<64>::try_new().unwrap());
+    bench_block!(
+        "auto_vanilla_64",
+        AutoVanillaBlock::<64>::try_new().unwrap()
+    );
     g.finish();
 }
 
