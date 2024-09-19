@@ -21,9 +21,6 @@ use crate::{
 /// Processes a block of 2 rows.
 #[doc(hidden)]
 pub trait RowProcessor: Copy + Clone + Sized + Send + Sync {
-    /// Returns true if this block type is supported on this machine.
-    fn new() -> Result<Self, ConversionError>;
-
     /// Processes a block `width` pixels wide, two rows high.
     ///
     /// # Safety
@@ -49,22 +46,30 @@ pub trait RowProcessor: Copy + Clone + Sized + Send + Sync {
 /// Converts [UYVY](https://fourcc.org/pixel-format/yuv-uyvy/) to [I420](https://fourcc.org/pixel-format/yuv-i420/).
 ///
 /// `uyvy_in` must be fully initialized. `yuv_out` will be fully initialized on success.
+#[allow(clippy::needless_return)] // clippy's suggestion doesn't compile.
 pub fn convert<FI: Frame, FO: FrameMut>(
     uyvy_in: &FI,
     yuv_out: &mut FO,
 ) -> Result<(), ConversionError> {
     #[cfg(target_arch = "x86_64")]
-    return convert_with::<ExplicitAvx2DoubleBlock, _, _>(uyvy_in, yuv_out);
+    {
+        if let Ok(avx2) = ExplicitAvx2DoubleBlock::try_new() {
+            return convert_with(avx2, uyvy_in, yuv_out);
+        }
+        return convert_with(ExplicitSse2::new(), uyvy_in, yuv_out);
+    }
 
+    // NEON is always supported on `aarch64`.
     #[cfg(target_arch = "aarch64")]
-    return convert_with::<ExplicitNeon, _, _>(uyvy_in, yuv_out);
+    return convert_with(ExplicitNeon::new(), uyvy_in, yuv_out);
 
-    #[allow(unused)]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     Err(ConversionError("no block processor available"))
 }
 
 #[doc(hidden)]
 pub fn convert_with<P: RowProcessor, FI: Frame, FO: FrameMut>(
+    p: P,
     uyvy_in: &FI,
     yuv_out: &mut FO,
 ) -> Result<(), ConversionError> {
@@ -76,7 +81,6 @@ pub fn convert_with<P: RowProcessor, FI: Frame, FO: FrameMut>(
     {
         return Err(ConversionError("invalid arguments"));
     }
-    let p = P::new()?;
     let pixels = width * height;
     let uyvy_planes = uyvy_in.planes();
     let [uyvy_in] = &uyvy_planes[..] else {
@@ -191,16 +195,19 @@ unsafe fn fallback(
 pub struct ExplicitAvx2DoubleBlock(());
 
 #[cfg(target_arch = "x86_64")]
-impl RowProcessor for ExplicitAvx2DoubleBlock {
+impl ExplicitAvx2DoubleBlock {
     #[inline]
-    fn new() -> Result<Self, ConversionError> {
+    pub fn try_new() -> Result<Self, ConversionError> {
         if is_x86_feature_detected!("avx2") {
             Ok(Self(()))
         } else {
             Err(ConversionError("avx2 is not supported on this machine"))
         }
     }
+}
 
+#[cfg(target_arch = "x86_64")]
+impl RowProcessor for ExplicitAvx2DoubleBlock {
     #[target_feature(enable = "avx2")]
     #[inline(never)]
     unsafe fn process(
@@ -289,16 +296,19 @@ impl RowProcessor for ExplicitAvx2DoubleBlock {
 pub struct ExplicitAvx2SingleBlock(());
 
 #[cfg(target_arch = "x86_64")]
-impl RowProcessor for ExplicitAvx2SingleBlock {
+impl ExplicitAvx2SingleBlock {
     #[inline]
-    fn new() -> Result<Self, ConversionError> {
+    pub fn try_new() -> Result<Self, ConversionError> {
         if is_x86_feature_detected!("avx2") {
             Ok(Self(()))
         } else {
             Err(ConversionError("avx2 is not supported on this machine"))
         }
     }
+}
 
+#[cfg(target_arch = "x86_64")]
+impl RowProcessor for ExplicitAvx2SingleBlock {
     #[inline(never)]
     #[target_feature(enable = "avx2")]
     unsafe fn process(
@@ -372,21 +382,132 @@ impl RowProcessor for ExplicitAvx2SingleBlock {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+#[derive(Copy, Clone, Default)]
+pub struct ExplicitSse2(());
+
+#[cfg(target_arch = "x86_64")]
+impl ExplicitSse2 {
+    #[inline]
+    pub fn new() -> Self {
+        // On x86_64 (unlike 32-bit x86), sse2 is mandatory.
+        Self(())
+    }
+
+    #[inline]
+    pub fn try_new() -> Result<Self, ConversionError> {
+        Ok(Self::new())
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl RowProcessor for ExplicitSse2 {
+    unsafe fn process(
+        self,
+        width: usize,
+        mut top_uyvy_addr: *const u8,
+        mut bot_uyvy_addr: *const u8,
+        mut top_y_addr: *mut u8,
+        mut bot_y_addr: *mut u8,
+        mut u_addr: *mut u8,
+        mut v_addr: *mut u8,
+    ) {
+        let mut i = 0;
+        const BLOCK_SIZE: usize = 32;
+        let low_bits = x86_64::_mm_set1_epi16(0xFF);
+        while i + BLOCK_SIZE <= width {
+            let load = |uyvy_addr: *const u8| -> [_; 4] {
+                std::array::from_fn(|i| x86_64::_mm_loadu_si128(uyvy_addr.add(16 * i) as _))
+            };
+            let top_uyvy = load(top_uyvy_addr);
+            let bot_uyvy = load(bot_uyvy_addr);
+            for (uyvy, y_addr) in [(top_uyvy, top_y_addr), (bot_uyvy, bot_y_addr)] {
+                x86_64::_mm_storeu_si128(
+                    y_addr as _,
+                    x86_64::_mm_packus_epi16(
+                        x86_64::_mm_srli_epi16(uyvy[0], 8),
+                        x86_64::_mm_srli_epi16(uyvy[1], 8),
+                    ),
+                );
+                x86_64::_mm_storeu_si128(
+                    y_addr.add(16) as _,
+                    x86_64::_mm_packus_epi16(
+                        x86_64::_mm_srli_epi16(uyvy[2], 8),
+                        x86_64::_mm_srli_epi16(uyvy[3], 8),
+                    ),
+                );
+            }
+            let uv = |uyvy: [x86_64::__m128i; 4]| {
+                [
+                    x86_64::_mm_packus_epi16(
+                        x86_64::_mm_and_si128(uyvy[0], low_bits),
+                        x86_64::_mm_and_si128(uyvy[1], low_bits),
+                    ),
+                    x86_64::_mm_packus_epi16(
+                        x86_64::_mm_and_si128(uyvy[2], low_bits),
+                        x86_64::_mm_and_si128(uyvy[3], low_bits),
+                    ),
+                ]
+            };
+            let top_uv = uv(top_uyvy);
+            let bot_uv = uv(bot_uyvy);
+            let uv = [
+                x86_64::_mm_avg_epu8(top_uv[0], bot_uv[0]),
+                x86_64::_mm_avg_epu8(top_uv[1], bot_uv[1]),
+            ];
+            let u = x86_64::_mm_packus_epi16(
+                x86_64::_mm_and_si128(uv[0], low_bits),
+                x86_64::_mm_and_si128(uv[1], low_bits),
+            );
+            x86_64::_mm_storeu_si128(u_addr as _, u);
+            let v = x86_64::_mm_packus_epi16(
+                x86_64::_mm_srli_epi16(uv[0], 8),
+                x86_64::_mm_srli_epi16(uv[1], 8),
+            );
+            x86_64::_mm_storeu_si128(v_addr as _, v);
+            i += BLOCK_SIZE;
+            top_uyvy_addr = top_uyvy_addr.add(2 * BLOCK_SIZE);
+            bot_uyvy_addr = bot_uyvy_addr.add(2 * BLOCK_SIZE);
+            top_y_addr = top_y_addr.add(BLOCK_SIZE);
+            bot_y_addr = bot_y_addr.add(BLOCK_SIZE);
+            u_addr = u_addr.add(BLOCK_SIZE / 2);
+            v_addr = v_addr.add(BLOCK_SIZE / 2);
+        }
+        if i < width {
+            fallback(
+                width - i,
+                top_uyvy_addr,
+                bot_uyvy_addr,
+                top_y_addr,
+                bot_y_addr,
+                u_addr,
+                v_addr,
+            );
+        }
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[doc(hidden)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct ExplicitNeon(());
 
 #[cfg(target_arch = "aarch64")]
-impl RowProcessor for ExplicitNeon {
-    fn new() -> Result<Self, ConversionError> {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            Ok(Self(()))
-        } else {
-            Err(ConversionError("neon unsupported on this machine"))
-        }
+impl ExplicitNeon {
+    fn new() -> Self {
+        // On `aarch64` (unlike the 32-bit `arm`), NEON is mandatory.
+        Self(())
     }
 
+    #[inline]
+    pub fn try_new() -> Result<Self, ConversionError> {
+        Ok(Self::new())
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl RowProcessor for ExplicitNeon {
     #[inline(never)]
     #[target_feature(enable = "neon")]
     unsafe fn process(
@@ -447,16 +568,18 @@ macro_rules! auto {
         #[derive(Copy, Clone)]
         pub struct $ident<const PIXELS: usize>([(); PIXELS]);
 
-        impl<const PIXELS: usize> RowProcessor for $ident<PIXELS> {
+        impl<const PIXELS: usize> $ident<PIXELS> {
             #[inline(always)]
-            fn new() -> Result<Self, ConversionError> {
+            pub fn try_new() -> Result<Self, ConversionError> {
                 if true && $($supported)+ {
                     Ok(Self(std::array::from_fn(|_| ())))
                 } else {
                     Err(ConversionError(concat!(stringify!($ident), " unsupported on this machine")))
                 }
             }
+        }
 
+        impl<const PIXELS: usize> RowProcessor for $ident<PIXELS> {
             #[inline(never)]
             $(#[target_feature(enable = $feature)])*
             unsafe fn process(
@@ -545,7 +668,7 @@ mod tests {
                 /// Tests that a single `process` call produces the right `y` plane bytes.
                 #[test]
                 fn y() {
-                    let p = P::new().unwrap();
+                    let p = P::try_new().unwrap();
                     const PIXELS: usize = $pixels;
                     let mut top_in = vec![0xff; PIXELS * 4];
                     let mut bot_in = vec![0xff; PIXELS * 4];
@@ -577,7 +700,7 @@ mod tests {
                 /// Tests that a single `process` call produces the right `u` and `v` plane bytes.
                 #[test]
                 fn uv() {
-                    let p = P::new().unwrap();
+                    let p = P::try_new().unwrap();
                     const PIXELS: usize = $pixels;
                     let mut top_in = vec![0xff; PIXELS * 4];
                     let mut bot_in = vec![0xff; PIXELS * 4];
@@ -635,7 +758,7 @@ mod tests {
                         ConsecutiveFrame::new(PixelFormat::I420, WIDTH, HEIGHT).new_vec();
                     let expected_out = ConsecutiveFrame::new(PixelFormat::I420, WIDTH, HEIGHT)
                         .with_storage(&include_bytes!("testdata/out.yuv")[..]);
-                    super::super::convert_with::<P, _, _>(&uyvy_in, &mut actual_out).unwrap();
+                    super::super::convert_with(P::try_new().unwrap(), &uyvy_in, &mut actual_out).unwrap();
                     // `assert_eq!` output is unhelpful on these large binary arrays.
                     // On failure, it might be better to write to a file and diff with better tools,
                     // e.g.: `diff -u <(xxd src/testdata/out.yuv) <(xxd actual_out_auto.yuv)`
@@ -676,7 +799,7 @@ mod tests {
                     ][..]);
                     let mut actual_out =
                         ConsecutiveFrame::new(PixelFormat::I420, 3, 3).new_vec();
-                    super::super::convert_with::<P, _, _>(&uyvy_in, &mut actual_out).unwrap();
+                    super::super::convert_with(P::try_new().unwrap(), &uyvy_in, &mut actual_out).unwrap();
                     assert_eq!(expected_out.inner(), actual_out.inner());
                 }
             }
@@ -698,6 +821,10 @@ mod tests {
         explicit_single_avx2,
         32
     );
+
+    #[cfg(target_arch = "x86_64")]
+    #[cfg(not(miri))] // vendor instrinsics are unsupported on miri.
+    test_processor!(super::super::ExplicitSse2, explicit_sse2, 32);
 
     #[cfg(target_arch = "x86_64")]
     #[cfg(not(miri))] // vendor instrinsics are unsupported on miri.
