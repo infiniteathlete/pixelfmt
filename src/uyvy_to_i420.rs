@@ -153,6 +153,7 @@ unsafe fn hexprint(v: std::arch::x86_64::__m256i) -> impl std::fmt::Display {
     )
 }
 
+#[inline(never)]
 unsafe fn fallback(
     width: usize,
     top_uyvy_addr: *const u8,
@@ -232,14 +233,16 @@ impl RowProcessor for ExplicitAvx2DoubleBlock {
             if i + BLOCK_SIZE > width {
                 break;
             }
-            let [top, bot] = [top_uyvy_addr, bot_uyvy_addr].map(|uyvy_addr| -> [_; 4] {
+            let load = |uyvy_addr: *const u8| -> [_; 4] {
                 std::array::from_fn(|i| {
                     // VMOVDQU (YMM, M256) on Zen2: lat <8, cpi 0.5
                     let raw = x86_64::_mm256_loadu_si256(uyvy_addr.add(32 * i) as _);
                     // VPSHUFB (YMM, YMM, YMM) on Zen2: lat 1; cpi 0.5; ports 1*FP12.
                     x86_64::_mm256_shuffle_epi8(raw, shuf_indices)
                 })
-            });
+            };
+            let top = load(top_uyvy_addr);
+            let bot = load(bot_uyvy_addr);
             for (data, addr) in [(top, top_y_addr), (bot, bot_y_addr)] {
                 for i in [0, 1] {
                     // Put into 64-groups: y0 y2 y1 y3.
@@ -330,14 +333,16 @@ impl RowProcessor for ExplicitAvx2SingleBlock {
             if i + BLOCK_SIZE > width {
                 break;
             }
-            let [top, bot] = [top_uyvy_addr, bot_uyvy_addr].map(|uyvy_addr| -> [_; 2] {
+            let load = |uyvy_addr: *const u8| -> [_; 2] {
                 std::array::from_fn(|i| {
                     // VMOVDQU (YMM, M256) on Zen2: lat <8, cpi 0.5
                     let raw = x86_64::_mm256_loadu_si256(uyvy_addr.add(32 * i) as _);
                     // VPSHUFB (YMM, YMM, YMM) on Zen2: lat 1; cpi 0.5; ports 1*FP12.
                     x86_64::_mm256_shuffle_epi8(raw, shuf_indices)
                 })
-            });
+            };
+            let top = load(top_uyvy_addr);
+            let bot = load(bot_uyvy_addr);
             for (data, y_addr) in [(top, top_y_addr), (bot, bot_y_addr)] {
                 let y = x86_64::_mm256_unpacklo_epi64(data[0], data[1]);
                 // VMOVDQU (M256, YMM) on Zen2: ports 1*FP2.
