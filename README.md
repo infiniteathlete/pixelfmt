@@ -1,5 +1,9 @@
 # pixelfmt
 
+[![crates.io](https://img.shields.io/crates/v/pixelfmt.svg)](https://crates.io/crates/pixelfmt)
+[![docs.rs](https://img.shields.io/docsrs/pixelfmt)](https://docs.rs/pixelfmt)
+[![CI](https://img.shields.io/github/actions/workflow/status/infiniteathlete/pixelfmt/push.yml?branch=main)](https://github.com/infiniteathlete/pixelfmt/actions/workflows/push.yml)
+
 Pixel format conversions in pure Rust with SIMD optimizations on x86\_64 and
 aarch64. The performance goal is to approximately reach the memory bandwidth
 limit and thus optimal performance when the input and output are not already
