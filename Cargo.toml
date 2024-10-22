@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 edition = "2021"
 keywords = ["yuv"]
 categories = ["multimedia::images", "multimedia::video"]
+repository = "https://github.com/infiniteathlete/pixelfmt"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
