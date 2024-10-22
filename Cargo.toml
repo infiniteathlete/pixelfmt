@@ -8,6 +8,7 @@ edition = "2021"
 keywords = ["yuv"]
 categories = ["multimedia::images", "multimedia::video"]
 repository = "https://github.com/infiniteathlete/pixelfmt"
+rust-version = "1.79"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
