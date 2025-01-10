@@ -10,7 +10,6 @@ use pixelfmt::frame::{ConsecutiveFrame, Frame, FrameMut};
 ///
 /// This produces nonsense; it's useful only as a memory bandwidth baseline.
 fn memcpy_baseline(input: &ConsecutiveFrame<Vec<u8>>, output: &mut ConsecutiveFrame<Vec<u8>>) {
-    assert!(input.initialized());
     let input_planes = input.planes();
     let [input] = &input_planes[..] else {
         panic!("expected exactly one plane");
@@ -19,29 +18,18 @@ fn memcpy_baseline(input: &ConsecutiveFrame<Vec<u8>>, output: &mut ConsecutiveFr
     let [y_out, u_out, v_out] = &mut output_planes[..] else {
         panic!("expected exactly three planes");
     };
-    let (y_in, rest) = input.as_slice().split_at(input.len() / 2);
+    let (y_in, rest) = input.split_at(input.len() / 2);
     let (u_in_all, v_in_all) = rest.split_at(rest.len() / 2);
     let (u_in_1, u_in_2) = u_in_all.split_at(u_in_all.len() / 2);
     let (v_in_1, v_in_2) = v_in_all.split_at(v_in_all.len() / 2);
-    assert_eq!(y_out.len(), y_in.len());
-    assert_eq!(u_out.len(), u_in_1.len());
-    assert_eq!(u_out.len(), u_in_2.len());
-    assert_eq!(v_out.len(), v_in_1.len());
-    assert_eq!(v_out.len(), v_in_2.len());
-
-    unsafe {
-        std::ptr::copy_nonoverlapping(y_in.as_ptr(), y_out.as_mut_ptr().cast(), y_in.len());
-        std::ptr::copy_nonoverlapping(u_in_1.as_ptr(), u_out.as_mut_ptr().cast(), u_in_1.len());
-        std::ptr::copy_nonoverlapping(u_in_2.as_ptr(), u_out.as_mut_ptr().cast(), u_in_2.len());
-        std::ptr::copy_nonoverlapping(v_in_1.as_ptr(), v_out.as_mut_ptr().cast(), v_in_1.len());
-        std::ptr::copy_nonoverlapping(v_in_2.as_ptr(), v_out.as_mut_ptr().cast(), v_in_2.len());
-        drop(output_planes);
-        output.initialize()
-    }
+    y_out.copy_from_slice(y_in);
+    u_out.copy_from_slice(u_in_1);
+    u_out.copy_from_slice(u_in_2);
+    v_out.copy_from_slice(v_in_1);
+    v_out.copy_from_slice(v_in_2);
 }
 
 fn libyuv<FI: Frame, FO: FrameMut>(input: &FI, output: &mut FO) {
-    assert!(input.initialized());
     let input_planes = input.planes();
     let (width, height) = input.pixel_dimensions();
     let [uyvy] = &input_planes[..] else {
@@ -76,7 +64,6 @@ fn libyuv<FI: Frame, FO: FrameMut>(input: &FI, output: &mut FO) {
             )
         );
         drop(output_planes);
-        output.initialize()
     }
 }
 

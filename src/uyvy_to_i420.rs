@@ -73,7 +73,6 @@ pub fn convert_with<P: RowProcessor, FI: Frame, FO: FrameMut>(
     uyvy_in: &FI,
     yuv_out: &mut FO,
 ) -> Result<(), ConversionError> {
-    assert!(uyvy_in.initialized());
     let (width, height) = uyvy_in.pixel_dimensions();
     if uyvy_in.format() != crate::PixelFormat::UYVY422
         || yuv_out.format() != crate::PixelFormat::I420
@@ -139,7 +138,6 @@ pub fn convert_with<P: RowProcessor, FI: Frame, FO: FrameMut>(
         }
     }
     drop(yuv_planes);
-    unsafe { yuv_out.initialize() };
     Ok(())
 }
 
