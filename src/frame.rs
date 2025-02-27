@@ -59,6 +59,14 @@ impl<'p> FramePlaneRef<'p> {
     pub fn stride(&self) -> usize {
         self.stride
     }
+
+    /// Returns the data as a slice.
+    ///
+    /// Unlike `Deref`, the returned slice can outlive the `FramePlaneRef`.
+    #[inline]
+    pub fn as_slice(&self) -> &'p [u8] {
+        self.data
+    }
 }
 
 impl Deref for FramePlaneRef<'_> {
@@ -94,6 +102,14 @@ impl<'a> FramePlaneMut<'a> {
     #[inline]
     pub fn stride(&self) -> usize {
         self.stride
+    }
+
+    /// Returns the data as a mutable slice.
+    ///
+    /// Note: unlike `DerefMut`, the returned slice can outlive the `FramePlaneMut`.
+    #[inline]
+    pub fn into_slice(self) -> &'a mut [u8] {
+        self.data
     }
 }
 
