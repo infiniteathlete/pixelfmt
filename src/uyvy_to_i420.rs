@@ -148,9 +148,9 @@ unsafe fn hexprint(v: std::arch::x86_64::__m256i) -> impl std::fmt::Display {
     use std::arch::x86_64::_mm256_extract_epi64;
     format!(
         "{:032x} {:032x}",
-        u128::from(_mm256_extract_epi64(v, 3) as u64) << 64
+        (u128::from(_mm256_extract_epi64(v, 3) as u64) << 64)
             | u128::from(_mm256_extract_epi64(v, 2) as u64),
-        u128::from(_mm256_extract_epi64(v, 1) as u64) << 64
+        (u128::from(_mm256_extract_epi64(v, 1) as u64) << 64)
             | u128::from(_mm256_extract_epi64(v, 0) as u64)
     )
 }
